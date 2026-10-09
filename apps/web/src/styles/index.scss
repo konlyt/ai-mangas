@@ -1,0 +1,380 @@
+/**
+ * 全局样式文件
+ * Aurora 设计系统 — 蓝白 + 浅粉渐变，柔和光影
+ * 定义 CSS 变量、Element Plus 主题覆盖及通用基础样式
+ * @file styles/index.scss
+ */
+
+/* ============ CSS 变量定义（Aurora 设计系统） ============ */
+:root {
+  /* 主色调 — 冰川蓝 → 樱花粉渐变 */
+  --ai-primary-color: #3b7ee6;
+  --ai-primary-light: #6fa8ff;
+  --ai-primary-dark: #2a5db8;
+  --ai-secondary-color: #e67fa0;
+  --ai-gradient-primary: linear-gradient(135deg, #6fa8ff 0%, #ffb5c5 100%);
+  --ai-gradient-aurora: linear-gradient(135deg, #c4d7ff 0%, #ffc4d1 50%, #ffd9c4 100%);
+  --ai-gradient-soft: linear-gradient(135deg, #d5e5ff 0%, #ffe0e9 100%);
+
+  /* 辅助色 */
+  --ai-success-color: #1b9d63;
+  --ai-warning-color: #d68b1a;
+  --ai-danger-color: #d9344a;
+  --ai-info-color: #6b7896;
+
+  /* 背景色 — 极光雾感 */
+  --ai-bg-color: #f4f7ff;
+  --ai-bg-white: #ffffff;
+  --ai-bg-card: #ffffff;
+  --ai-bg-subtle: #f0f5fe;
+  --ai-bg-hover: #e8effa;
+
+  /* 文字颜色 */
+  --ai-text-primary: #1f2a44;
+  --ai-text-regular: #4b5775;
+  --ai-text-secondary: #6b7896;
+  --ai-text-placeholder: #a8b3cc;
+
+  /* 边框 */
+  --ai-border-color: #d4ddee;
+  --ai-border-light: #e8effa;
+  --ai-border-radius: 10px;
+  --ai-radius-sm: 6px;
+  --ai-radius-md: 12px;
+  --ai-radius-lg: 16px;
+  --ai-radius-full: 9999px;
+
+  /* 阴影 — 柔和光影 */
+  --ai-shadow-sm: 0 1px 2px rgba(31, 42, 68, 0.04), 0 2px 8px rgba(31, 42, 68, 0.04);
+  --ai-shadow-card: 0 1px 2px rgba(31, 42, 68, 0.04), 0 4px 16px rgba(31, 42, 68, 0.06);
+  --ai-shadow-hover: 0 4px 12px rgba(31, 42, 68, 0.08), 0 12px 32px rgba(31, 42, 68, 0.12);
+  --ai-shadow-glow: 0 8px 24px rgba(111, 168, 255, 0.28);
+  --ai-shadow-aurora: 0 8px 24px rgba(111, 168, 255, 0.32), 0 4px 12px rgba(255, 181, 197, 0.2);
+
+  /* 间距 */
+  --ai-spacing-xs: 4px;
+  --ai-spacing-sm: 8px;
+  --ai-spacing-md: 16px;
+  --ai-spacing-lg: 24px;
+  --ai-spacing-xl: 32px;
+
+  /* 动效 */
+  --ai-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ai-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ai-transition-fast: 0.15s var(--ai-ease-out);
+  --ai-transition-base: 0.25s var(--ai-ease-out);
+}
+
+/* ============ Element Plus 主题覆盖 ============ */
+:root {
+  --el-color-primary: var(--ai-primary-color);
+  --el-color-primary-light-3: #6fa8ff;
+  --el-color-primary-light-5: #9dc4ff;
+  --el-color-primary-light-7: #c7dcfa;
+  --el-color-primary-light-8: #d9e7fc;
+  --el-color-primary-light-9: #ecf3fe;
+  --el-color-primary-dark-2: var(--ai-primary-dark);
+  --el-border-radius-base: var(--ai-radius-sm);
+  --el-border-radius-small: 4px;
+  --el-box-shadow-light: var(--ai-shadow-sm);
+  --el-box-shadow: var(--ai-shadow-card);
+  --el-box-shadow-dark: var(--ai-shadow-hover);
+}
+
+/* ============ 基础重置 ============ */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', -apple-system,
+    BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  color: var(--ai-text-primary);
+  background-color: var(--ai-bg-color);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  position: relative;
+}
+
+/* 极光氛围背景 — 固定在视口底层 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(at 12% 8%, rgba(199, 220, 250, 0.55) 0px, transparent 50%),
+    radial-gradient(at 92% 0%, rgba(255, 217, 227, 0.45) 0px, transparent 50%),
+    radial-gradient(at 0% 92%, rgba(221, 213, 247, 0.35) 0px, transparent 50%),
+    radial-gradient(at 96% 96%, rgba(255, 217, 196, 0.35) 0px, transparent 50%);
+}
+
+#app {
+  position: relative;
+  z-index: 1;
+}
+
+a {
+  color: var(--ai-primary-color);
+  text-decoration: none;
+  transition: color var(--ai-transition-fast);
+
+  &:hover {
+    color: var(--ai-primary-light);
+  }
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+/* ============ 通用工具类 ============ */
+.flex {
+  display: flex;
+}
+
+.flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flex-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.text-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-container {
+  padding: var(--ai-spacing-lg);
+}
+
+/* 渐变文字 */
+.text-gradient {
+  background: var(--ai-gradient-primary);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* 毛玻璃面板 */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: saturate(180%) blur(12px);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
+}
+
+/* Aurora 卡片 — hover 时渐变描边 */
+.aurora-card {
+  position: relative;
+  background: var(--ai-bg-card);
+  border: 1px solid var(--ai-border-light);
+  border-radius: var(--ai-radius-lg);
+  box-shadow: var(--ai-shadow-card);
+  transition: transform var(--ai-transition-base), box-shadow var(--ai-transition-base);
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--ai-shadow-aurora);
+  }
+}
+
+/* 入场动画 */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.4s var(--ai-ease-out) both;
+}
+
+/* 呼吸光点 */
+@keyframes pulseSoft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse {
+  animation: pulseSoft 2s ease-in-out infinite;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #c5d2e8;
+  border-radius: 10px;
+
+  &:hover {
+    background-color: #9db4d8;
+  }
+}
+
+::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+::selection {
+  background: var(--ai-primary-light);
+  color: #fff;
+}
+
+/* ============ Element Plus 组件细节优化 ============ */
+
+/* 按钮 — 主按钮使用渐变 */
+.el-button--primary {
+  background: var(--ai-gradient-primary);
+  border: none;
+  box-shadow: var(--ai-shadow-sm);
+  transition: all var(--ai-transition-fast);
+
+  &:hover,
+  &:focus {
+    background: var(--ai-gradient-primary);
+    filter: brightness(1.05);
+    transform: translateY(-1px);
+    box-shadow: var(--ai-shadow-glow);
+  }
+
+  &:active {
+    transform: translateY(0);
+  }
+}
+
+.el-button--default {
+  border-radius: var(--ai-radius-sm);
+  transition: all var(--ai-transition-fast);
+
+  &:hover {
+    color: var(--ai-primary-color);
+    border-color: var(--ai-primary-light);
+    background: var(--ai-bg-subtle);
+  }
+}
+
+/* 卡片 */
+.el-card {
+  border-radius: var(--ai-radius-md);
+  border: 1px solid var(--ai-border-light);
+  box-shadow: var(--ai-shadow-card);
+  transition: all var(--ai-transition-base);
+
+  &:hover {
+    box-shadow: var(--ai-shadow-hover);
+  }
+}
+
+/* 输入框 */
+.el-input__wrapper {
+  border-radius: var(--ai-radius-sm);
+  box-shadow: 0 0 0 1px var(--ai-border-color) inset;
+  transition: all var(--ai-transition-fast);
+
+  &:hover {
+    box-shadow: 0 0 0 1px var(--ai-primary-light) inset;
+  }
+
+  &.is-focus {
+    box-shadow: 0 0 0 2px var(--ai-primary-light) inset !important;
+  }
+}
+
+/* 标签页 */
+.el-tabs__item.is-active {
+  color: var(--ai-primary-color);
+}
+
+.el-tabs__active-bar {
+  background: var(--ai-gradient-primary);
+  height: 3px;
+  border-radius: 2px;
+}
+
+/* 消息提示 */
+.el-message {
+  border-radius: var(--ai-radius-md);
+  box-shadow: var(--ai-shadow-hover);
+}
+
+/* 下拉菜单 */
+.el-dropdown-menu {
+  border-radius: var(--ai-radius-md);
+  border: 1px solid var(--ai-border-light);
+  box-shadow: var(--ai-shadow-hover);
+  padding: 6px;
+}
+
+.el-dropdown-menu__item {
+  border-radius: var(--ai-radius-sm);
+  transition: all var(--ai-transition-fast);
+
+  &:hover {
+    background: var(--ai-bg-subtle);
+    color: var(--ai-primary-color);
+  }
+}
+
+/* 对话框 */
+.el-dialog {
+  border-radius: var(--ai-radius-lg);
+  overflow: hidden;
+  box-shadow: var(--ai-shadow-hover);
+}
+
+/* 头像 */
+.el-avatar {
+  background: var(--ai-gradient-primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* 标签 */
+.el-tag {
+  border-radius: var(--ai-radius-full);
+  font-weight: 500;
+}
+
+/* 步骤条 */
+.el-step__head.is-process {
+  color: var(--ai-primary-color);
+  border-color: var(--ai-primary-color);
+}
+
+.el-step__title.is-process {
+  color: var(--ai-primary-color);
+  font-weight: 600;
+}

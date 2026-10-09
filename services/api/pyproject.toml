@@ -1,0 +1,69 @@
+[project]
+name = "ai-manga-api"
+version = "1.0.0"
+description = "AI漫剧制作平台后端服务（FastAPI + LangGraph）"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0,<0.116.0",
+    "starlette>=0.37.2,<0.42.0",
+    "uvicorn[standard]>=0.30.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncmy>=0.2.9",
+    "alembic>=1.13.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "python-jose[cryptography]>=3.3.0",
+    "bcrypt>=4.0.0",
+    "cryptography>=42.0.0",
+    "python-multipart>=0.0.9",
+    "redis>=5.0.0",
+    "arq>=0.26.0",
+    "langgraph>=0.2.0",
+    "langchain-core>=0.3.0",
+    "litellm>=1.40.0",
+    "httpx>=0.27.0",
+    "loguru>=0.7.0",
+    "orjson>=3.10.0",
+    "email-validator>=2.2.0",
+    "phonenumbers>=8.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+# 冒烟测试套件配置：测试目录、异步模式与环境路径
+testpaths = ["tests"]
+# 将项目根目录（services/api）加入 sys.path，保证 pytest 任意方式启动都能 import app
+pythonpath = ["."]
+# pytest-asyncio 自动模式：async 测试与 async fixture 无需逐个标注
+asyncio_mode = "auto"
+# 事件循环作用域与测试函数一致（每个测试独立循环，配合函数级 fixture 生命周期）
+asyncio_default_fixture_loop_scope = "function"

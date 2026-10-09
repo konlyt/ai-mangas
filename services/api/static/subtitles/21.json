@@ -1,0 +1,17 @@
+{
+  "project_id": 21,
+  "segments": [
+    {
+      "storyboard_id": 9,
+      "text": "这是什么？居然在发光！",
+      "start": 0.0,
+      "duration": 2.0
+    },
+    {
+      "storyboard_id": 10,
+      "text": "欢迎来到2150年，我是你的向导。",
+      "start": 4.08,
+      "duration": 4.0
+    }
+  ]
+}
