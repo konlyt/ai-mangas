@@ -23,6 +23,7 @@ import {
   deleteCharacter,
   getScenes,
   uploadReference,
+  regenerateCharacter,
   type CharacterWithReference,
 } from '@/api/assets'
 import { resumeGraph } from '@/api/graph'
@@ -73,7 +74,16 @@ async function fetchAssets(): Promise<void> {
   loading.value = true
   try {
     const [chars, scs] = await Promise.all([getCharacters(projectId.value), getScenes(projectId.value)])
-    characters.value = chars
+    // 按 name 去重：同名角色只保留最新的（id 最大的）
+    const seen = new Map<string, any>()
+    for (const c of chars) {
+      const key = c.name
+      const existing = seen.get(key)
+      if (!existing || c.id > existing.id) {
+        seen.set(key, c)
+      }
+    }
+    characters.value = Array.from(seen.values())
     scenes.value = scs
   } catch (e) {
     ElMessage.error('获取资产列表失败')
@@ -88,19 +98,24 @@ async function fetchAssets(): Promise<void> {
 async function handleGenerateCharacters(): Promise<void> {
   generating.value = true
   generateProgress.value = 0
+  ElMessage.info('正在生成角色，请稍候...')
+  
+  // 立即启动模拟进度（不等接口返回）
+  const timer = setInterval(() => {
+    if (generateProgress.value < 90) {
+      generateProgress.value += Math.random() * 5 + 2
+    }
+  }, 500)
+  
   try {
     await generateCharacters(projectId.value)
-    // 模拟进度
-    const timer = setInterval(() => {
-      generateProgress.value += 10
-      if (generateProgress.value >= 100) {
-        clearInterval(timer)
-        generating.value = false
-        fetchAssets()
-        ElMessage.success('角色生成完成')
-      }
-    }, 300)
+    clearInterval(timer)
+    generateProgress.value = 100
+    generating.value = false
+    await fetchAssets()
+    ElMessage.success('角色生成完成')
   } catch (e) {
+    clearInterval(timer)
     generating.value = false
     ElMessage.error('角色生成失败，请重试')
   }
@@ -198,29 +213,54 @@ async function handleDeleteOne(c: Character): Promise<void> {
 }
 
 /**
- * 重新生成单个角色
+ * 重新生成单个角色（换一张）
  * @param c - 角色对象
  */
 async function handleRegenerateOne(c: Character): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `确认删除并重新生成角色「${c.name}」？当前图片将被删除，系统会根据剧本自动重新生成。`,
-      '重新生成确认',
-      { type: 'warning', confirmButtonText: '确认重新生成', cancelButtonText: '取消' }
+      `确认重新生成角色「${c.name}」？当前图片将被替换，其他角色不受影响。`,
+      '换一张确认',
+      { type: 'warning', confirmButtonText: '确认换一张', cancelButtonText: '取消' }
     )
     drawerVisible.value = false
     generating.value = true
-    generateProgress.value = 10
-    ElMessage.info('正在重新生成角色，请稍候...')
-    await generateCharacters(projectId.value)
+    generateProgress.value = 30
+    ElMessage.info(`正在重新生成「${c.name}」，请稍候...`)
+    const updated = await regenerateCharacter(projectId.value, String(c.id))
     generateProgress.value = 100
     generating.value = false
-    await fetchAssets()
-    ElMessage.success('角色重新生成完成')
+    // 直接用接口返回的数据更新列表，而不是重新拉取
+    const idx = characters.value.findIndex(ch => ch.id === c.id)
+    if (idx >= 0) {
+      characters.value[idx] = { ...characters.value[idx], ...updated }
+      console.log('已更新角色:', c.name, '新URL:', updated.main_asset_url)
+    }
+    // 同时后台重新拉取，确保数据一致
+    fetchAssets()
+    ElMessage.success(`「${c.name}」已重新生成`)
   } catch (e) {
     generating.value = false
-    // 用户取消
+    console.error('重新生成失败:', e)
   }
+}
+
+/**
+ * 获取角色主图 URL（优先从 variants 里找 front 类型，防缓存）
+ */
+function getCharacterImage(c: any): string {
+  // 优先从 variants 里找 front 类型
+  if (c.variants && c.variants.length > 0) {
+    const front = c.variants.find((v: any) => v.variant_type === 'front' && v.image_url)
+    if (front) {
+      return front.image_url + (front.image_url.includes('?') ? '&' : '?') + 't=' + Date.now()
+    }
+  }
+  //  fallback 到 main_asset_url
+  if (c.main_asset_url) {
+    return c.main_asset_url + (c.main_asset_url.includes('?') ? '&' : '?') + 't=' + Date.now()
+  }
+  return ''
 }
 
 /**
@@ -297,26 +337,22 @@ onMounted(() => {
 
 <template>
   <div class="assets-view" v-loading="loading">
-    <!-- 顶部标题 -->
-    <div class="page-header">
-      <h1 class="page-title">资产管理</h1>
-    </div>
     <StageStepper current-stage="assets" />
 
     <!-- 批量操作栏 -->
     <div class="batch-bar">
-      <el-button type="primary" :loading="generating" @click="handleGenerateCharacters">
+      <button class="btn-gradient btn-generate" :disabled="generating" @click="handleGenerateCharacters">
         <el-icon><MagicStick /></el-icon>
         批量生成角色
-      </el-button>
-      <el-button :disabled="characters.length === 0" @click="handleLockAll">
+      </button>
+      <button class="btn-white" :disabled="characters.length === 0" @click="handleLockAll">
         <el-icon><Lock /></el-icon>
         全部锁定
-      </el-button>
-      <el-button :disabled="characters.length === 0" @click="handleUnlockAll">
+      </button>
+      <button class="btn-white" :disabled="characters.length === 0" @click="handleUnlockAll">
         <el-icon><Unlock /></el-icon>
         全部解锁
-      </el-button>
+      </button>
       <span v-if="generating" class="progress-text">
         生成中 {{ generateProgress }}%
       </span>
@@ -331,117 +367,118 @@ onMounted(() => {
     />
 
     <!-- Tab 切换 -->
-    <el-tabs v-model="activeTab" class="asset-tabs">
-      <!-- 角色 Tab -->
-      <el-tab-pane label="角色" name="character">
-        <el-empty v-if="characters.length === 0 && !loading" description="暂无角色，点击「批量生成角色」创建" />
-        <div v-else class="asset-grid">
-          <el-card
-            v-for="c in characters"
-            :key="c.id"
-            class="asset-card"
-            shadow="hover"
-            @click="openDetail(c)"
-          >
-            <div class="card-image">
-              <el-image
-                :src="c.main_asset_url"
-                fit="cover"
-                class="portrait"
-              >
-                <template #error>
-                  <div class="image-placeholder">
-                    <el-icon :size="40"><User /></el-icon>
-                  </div>
-                </template>
-              </el-image>
-              <el-tag v-if="c.is_locked ?? c.locked" type="success" class="lock-badge" effect="dark">
-                <el-icon><Lock /></el-icon>
-                已锁定
-              </el-tag>
-            </div>
-            <div class="card-info">
-              <div class="asset-name-row">
-                <div class="asset-name">{{ c.name }}</div>
-                <div class="card-actions">
-                  <el-button size="small" text type="primary" @click.stop="handleUnlockOne(c)" v-if="c.is_locked ?? c.locked">
-                    <el-icon><Unlock /></el-icon>
-                    解锁
-                  </el-button>
-                  <el-button size="small" text type="danger" @click.stop="handleDeleteOne(c)">
-                    <el-icon><Delete /></el-icon>
-                    删除
-                  </el-button>
-                  <el-upload
-                    class="ref-upload"
-                    action="#"
-                    accept="image/jpeg,image/png,image/webp"
-                    :show-file-list="false"
-                    :before-upload="beforeReferenceUpload"
-                    :http-request="(opt) => doUploadReference(opt, c)"
-                    @click.stop
-                  >
-                    <el-button size="small" text type="primary">
-                      <el-icon><Upload /></el-icon>
-                      上传参考图
-                    </el-button>
-                  </el-upload>
-                </div>
-              </div>
-              <div v-if="c.reference_url" class="reference-row" @click.stop>
-                <el-image
-                  :src="c.reference_url"
-                  fit="cover"
-                  class="ref-thumb"
-                  :preview-src-list="[c.reference_url]"
-                  preview-teleported
-                />
-                <span class="ref-label">参考图</span>
-              </div>
-              <div class="similarity" @click.stop>
-                <el-tooltip placement="top" effect="dark">
-                  <template #content>
-                    <div class="compare-tooltip">
-                      <div>一致性对照图</div>
-                      <el-image :src="c.main_asset_url" fit="cover" style="width:120px;height:120px" />
-                    </div>
-                  </template>
-                  <el-tag type="warning" size="small">相似度 {{ (85 + Math.random() * 10).toFixed(1) }}%</el-tag>
-                </el-tooltip>
-              </div>
-            </div>
-          </el-card>
-        </div>
-      </el-tab-pane>
+    <div class="custom-tabs">
+      <div
+        class="tab-item"
+        :class="{ active: activeTab === 'character' }"
+        @click="activeTab = 'character'"
+      >
+        角色
+      </div>
+      <div
+        class="tab-item"
+        :class="{ active: activeTab === 'scene' }"
+        @click="activeTab = 'scene'"
+      >
+        场景
+      </div>
+    </div>
 
-      <!-- 场景 Tab -->
-      <el-tab-pane label="场景" name="scene">
-        <el-empty v-if="scenes.length === 0 && !loading" description="暂无场景" />
-        <div v-else class="asset-grid">
-          <el-card
-            v-for="s in scenes"
-            :key="s.id"
-            class="asset-card"
-            shadow="hover"
-            @click="openDetail(s)"
-          >
-            <div class="card-image">
-              <el-image :src="s.image_url" fit="cover" class="portrait">
-                <template #error>
-                  <div class="image-placeholder">
-                    <el-icon :size="40"><Picture /></el-icon>
-                  </div>
-                </template>
-              </el-image>
+    <!-- 角色 Tab 内容 -->
+    <div v-if="activeTab === 'character'">
+      <el-empty v-if="characters.length === 0 && !loading" description="暂无角色，点击「批量生成角色」创建" />
+      <div v-else class="asset-grid">
+        <div
+          v-for="c in characters"
+          :key="c.id"
+          class="asset-card"
+          @click="openDetail(c)"
+        >
+          <div class="card-image">
+            <el-image
+              :src="getCharacterImage(c)"
+              fit="cover"
+              class="portrait"
+            >
+              <template #error>
+                <div class="image-placeholder">
+                  <el-icon :size="40"><User /></el-icon>
+                </div>
+              </template>
+            </el-image>
+            <div v-if="c.is_locked ?? c.locked" class="lock-badge">
+              <el-icon><Lock /></el-icon>
+              已锁定
             </div>
-            <div class="card-info">
-              <div class="asset-name">{{ s.name }}</div>
-              <div class="scene-desc text-ellipsis">{{ s.description }}</div>
+          </div>
+          <div class="card-body">
+            <div class="asset-name">{{ c.name }}</div>
+            <div class="btn-row">
+              <button class="btn-gradient half-btn" @click.stop="handleRegenerateOne(c)">
+                <el-icon><RefreshRight /></el-icon>
+                换一张
+              </button>
+              <el-upload
+                class="half-btn ref-upload"
+                action="#"
+                accept="image/jpeg,image/png,image/webp"
+                :show-file-list="false"
+                :before-upload="beforeReferenceUpload"
+                :http-request="(opt) => doUploadReference(opt, c)"
+                @click.stop
+              >
+                <button class="btn-gradient half-btn">
+                  <el-icon><Upload /></el-icon>
+                  上传参考图
+                </button>
+              </el-upload>
             </div>
-          </el-card>
+            <div class="bottom-row">
+              <span class="similarity-tag">相似度 --</span>
+              <div class="mini-actions">
+                <span
+                  v-if="c.is_locked ?? c.locked"
+                  class="action-text unlock"
+                  @click.stop="handleUnlockOne(c)"
+                >
+                  解锁
+                </span>
+                <span class="action-text delete" @click.stop="handleDeleteOne(c)">
+                  删除
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
-      </el-tab-pane>
-    </el-tabs>
+      </div>
+    </div>
+
+    <!-- 场景 Tab 内容 -->
+    <div v-else>
+      <el-empty v-if="scenes.length === 0 && !loading" description="暂无场景" />
+      <div v-else class="asset-grid">
+        <div
+          v-for="s in scenes"
+          :key="s.id"
+          class="asset-card"
+          @click="openDetail(s)"
+        >
+          <div class="card-image">
+            <el-image :src="s.image_url" fit="cover" class="portrait">
+              <template #error>
+                <div class="image-placeholder">
+                  <el-icon :size="40"><Picture /></el-icon>
+                </div>
+              </template>
+            </el-image>
+          </div>
+          <div class="card-body">
+            <div class="asset-name">{{ s.name }}</div>
+            <div class="scene-desc text-ellipsis">{{ s.description }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- 底部确认按钮 -->
     <div class="page-footer">
@@ -503,21 +540,62 @@ onMounted(() => {
   min-height: 100%;
 }
 
-.page-header {
-  margin-bottom: 16px;
-}
-
-.page-title {
-  font-size: 22px;
-  color: var(--ai-text-primary);
-  margin: 0;
-}
-
 .batch-bar {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 16px;
+  margin: 20px 0 16px;
+}
+
+/* 渐变按钮样式 */
+.btn-gradient {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #667eea 0%, #f093fb 100%);
+  color: white;
+  font-size: 13px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.btn-gradient:hover {
+  opacity: 0.9;
+}
+
+.btn-gradient:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 白色按钮样式 */
+.btn-white {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 16px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background: white;
+  color: #333;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-white:hover {
+  border-color: #667eea;
+  color: #667eea;
+}
+
+.btn-white:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .progress-text {
@@ -525,23 +603,57 @@ onMounted(() => {
   color: var(--ai-primary-color);
 }
 
+/* 自定义 Tab */
+.custom-tabs {
+  display: flex;
+  gap: 24px;
+  border-bottom: 1px solid #e8e8e8;
+  margin-bottom: 20px;
+}
+
+.tab-item {
+  padding: 8px 0;
+  font-size: 15px;
+  color: #666;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: all 0.2s;
+}
+
+.tab-item.active {
+  color: #667eea;
+  border-bottom-color: #667eea;
+  font-weight: 500;
+}
+
+/* 卡片网格 */
 .asset-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 20px;
 }
 
 .asset-card {
-  cursor: pointer;
+  background: white;
+  border-radius: 12px;
   overflow: hidden;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.asset-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
 }
 
 .card-image {
   position: relative;
   width: 100%;
-  height: 240px;
+  aspect-ratio: 4/5;
   overflow: hidden;
-  border-radius: 4px;
+  background: #f5f5f5;
 }
 
 .portrait {
@@ -563,50 +675,48 @@ onMounted(() => {
   }
 }
 
+/* 锁定徽章 */
 .lock-badge {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  display: flex;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
+  padding: 4px 10px;
+  background: #52c41a;
+  color: white;
+  font-size: 12px;
+  border-radius: 12px;
 }
 
-.unlock-btn {
-  position: absolute;
-  top: 36px;
-  right: 8px;
-  z-index: 10;
-}
-
-.delete-btn {
-  position: absolute;
-  top: 68px;
-  right: 8px;
-  z-index: 10;
-}
-
-.card-info {
-  padding: 12px 4px 4px;
+/* 卡片内容区 */
+.card-body {
+  padding: 12px 14px 14px;
 }
 
 .asset-name {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
-  margin-bottom: 6px;
+  color: #333;
+  margin-bottom: 12px;
 }
 
-.asset-name-row {
+/* 按钮行 */
+.btn-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 8px;
+  margin-bottom: 10px;
 }
 
-.card-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.half-btn {
+  flex: 1;
+}
+
+.btn-gradient.half-btn {
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 6px;
 }
 
 .ref-upload {
@@ -614,32 +724,42 @@ onMounted(() => {
   line-height: 1;
 }
 
-.reference-row {
+/* 底部行 */
+.bottom-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 2px 0 6px;
+  justify-content: space-between;
 }
 
-.ref-thumb {
-  width: 40px;
-  height: 40px;
-  border-radius: 6px;
-  border: 1px solid var(--ai-border-color, #e5e7eb);
-}
-
-.ref-label {
+.similarity-tag {
   font-size: 12px;
-  color: var(--ai-text-secondary);
+  color: #999;
+  background: #f5f5f5;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.mini-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.action-text {
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.action-text.unlock {
+  color: #fa8c16;
+}
+
+.action-text.delete {
+  color: #f5222d;
 }
 
 .scene-desc {
   font-size: 12px;
   color: var(--ai-text-secondary);
-}
-
-.similarity {
-  margin-top: 4px;
 }
 
 .page-footer {
@@ -660,36 +780,27 @@ onMounted(() => {
   overflow: hidden;
 }
 
-.thumb-row {
-  display: flex;
-  gap: 10px;
-  overflow-x: auto;
-  padding-bottom: 8px;
-}
-
-.thumb-item {
-  flex-shrink: 0;
-  text-align: center;
-}
-
-.thumb {
-  width: 80px;
-  height: 80px;
-  border-radius: 6px;
-}
-
-.thumb-label {
-  font-size: 12px;
-  color: var(--ai-text-secondary);
-}
-
-.similarity-badge {
-  text-align: center;
-  padding: 8px 0;
-}
-
 .detail-actions {
   margin-top: 16px;
   text-align: right;
+}
+
+/* 响应式 */
+@media (max-width: 1200px) {
+  .asset-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+@media (max-width: 992px) {
+  .asset-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .asset-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 </style>

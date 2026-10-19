@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     QIANWEN_TTS_MAX_RETRIES: int = 0
     QIANWEN_TTS_ALLOW_DEMO_FALLBACK: bool = False
 
+    # ---- 智谱 CogVideoX（视频生成）----
+    ZHIPU_VIDEO_BASE_URL: str = "https://open.bigmodel.cn/api/paas/v4"
+    ZHIPU_VIDEO_API_KEY: str = ""
+    ZHIPU_VIDEO_MODEL: str = "cogvideox-3"
+
+    # ---- 默认视频 Provider 选择 ----
+    VIDEO_PROVIDER_DEFAULT: str = "zhipu"
+
     # ---- API ----
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000

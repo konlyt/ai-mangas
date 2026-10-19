@@ -378,3 +378,41 @@ ol {
   color: var(--ai-primary-color);
   font-weight: 600;
 }
+
+/* 资产卡片布局优化 */
+.asset-grid {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)) !important;
+  gap: 20px !important;
+}
+.asset-card {
+  display: flex !important;
+  flex-direction: column !important;
+}
+.asset-card .card-image {
+  aspect-ratio: 4 / 5 !important;
+  height: auto !important;
+}
+.asset-card .card-image .portrait {
+  object-fit: cover !important;
+}
+.asset-card .card-info {
+  padding: 12px 14px 16px !important;
+  flex: 1 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+}
+.asset-card .asset-name {
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  color: #303133 !important;
+}
+.asset-card .card-actions {
+  display: flex !important;
+  gap: 6px !important;
+  flex-wrap: wrap !important;
+}
+.asset-card .card-actions .el-button {
+  flex: 1 !important;
+  margin: 0 !important;
+}

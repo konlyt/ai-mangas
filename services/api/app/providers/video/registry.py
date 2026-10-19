@@ -8,10 +8,12 @@
 
 from typing import Optional
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.providers.video.agnes import AgnesVideoProvider
 from app.providers.video.base import VideoProvider
 from app.providers.video.mock import MockVideoProvider
+from app.providers.video.zhipu import ZhipuVideoProvider
 
 logger = get_logger()
 
@@ -25,16 +27,17 @@ class VideoProviderRegistry:
     """
 
     def __init__(self) -> None:
-        """初始化注册表并注册 agnes（默认）与 mock Provider。
+        """初始化注册表并注册各厂商 Provider。
 
         Returns:
             None
         """
         self._providers: dict[str, VideoProvider] = {}
-        # 默认使用 Agnes 真实生成；其内部在未配置 Key/调用失败时自动降级 mock
-        self._default: str = "agnes"
+        # 默认视频 Provider，可通过环境变量 VIDEO_PROVIDER_DEFAULT 配置
+        self._default: str = getattr(settings, "VIDEO_PROVIDER_DEFAULT", "zhipu")
         self.register("mock", MockVideoProvider())
         self.register("agnes", AgnesVideoProvider())
+        self.register("zhipu", ZhipuVideoProvider())
 
     def register(self, name: str, provider: VideoProvider) -> None:
         """注册一个视频生成 Provider。

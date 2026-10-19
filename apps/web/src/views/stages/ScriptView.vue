@@ -573,8 +573,20 @@ onBeforeUnmount(() => {
                 :class="{ active: activeSceneSeq === scene.seq }"
                 @click="selectScene(scene.seq)"
               >
-                <div class="scene-seq">第 {{ scene.seq }} 场</div>
-                <div class="scene-title">{{ scene.title }}</div>
+                <div class="scene-item__thumb" v-if="scene.thumbnail">
+                  <el-image :src="scene.thumbnail" fit="cover" class="thumb-img">
+                    <template #error>
+                      <div class="thumb-placeholder">
+                        <el-icon><Picture /></el-icon>
+                      </div>
+                    </template>
+                  </el-image>
+                </div>
+                <div class="scene-item__content">
+                  <div class="scene-seq">第 {{ scene.seq }} 场</div>
+                  <div class="scene-title">{{ scene.title }}</div>
+                  <div v-if="scene.summary" class="scene-summary">{{ scene.summary }}</div>
+                </div>
               </div>
             </div>
           </aside>
@@ -853,13 +865,13 @@ onBeforeUnmount(() => {
 
 .edit-body {
   display: grid;
-  grid-template-columns: 260px 1fr;
-  gap: 16px;
+  grid-template-columns: 340px 1fr;
+  gap: 20px;
   height: calc(100vh - 380px);
   min-height: 400px;
 }
 
-/* 左侧场次导航 */
+/* 左侧场次导航（阅读器目录风格） */
 .scene-nav {
   background: #fff;
   border-radius: var(--ai-radius-md);
@@ -871,25 +883,28 @@ onBeforeUnmount(() => {
 }
 
 .scene-nav__header {
-  padding: 16px 20px;
-  font-size: 14px;
+  padding: 20px 24px 16px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--ai-text-primary);
   border-bottom: 1px solid var(--ai-border-light);
+  letter-spacing: 0.5px;
 }
 
 .scene-list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 12px;
 }
 
 .scene-item {
-  padding: 10px 14px;
-  border-radius: var(--ai-radius-sm);
+  display: flex;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: var(--ai-radius-md);
   cursor: pointer;
   transition: all var(--ai-transition-fast);
-  margin-bottom: 4px;
+  margin-bottom: 8px;
   border-left: 3px solid transparent;
 
   &:hover {
@@ -897,27 +912,68 @@ onBeforeUnmount(() => {
   }
 
   &.active {
-    background: var(--ai-bg-subtle);
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(240, 147, 251, 0.08) 100%);
     border-left-color: var(--ai-primary-color);
   }
 }
 
+.scene-item__thumb {
+  flex-shrink: 0;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--ai-radius-sm);
+  overflow: hidden;
+  background: var(--ai-bg-subtle);
+}
+
+.thumb-img {
+  width: 100%;
+  height: 100%;
+}
+
+.thumb-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ai-text-placeholder);
+  font-size: 20px;
+}
+
+.scene-item__content {
+  flex: 1;
+  min-width: 0;
+}
+
 .scene-seq {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--ai-text-secondary);
-  margin-bottom: 3px;
+  margin-bottom: 6px;
+  letter-spacing: 0.3px;
 }
 
 .scene-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--ai-text-regular);
-  line-height: 1.4;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ai-text-primary);
+  line-height: 1.5;
+  margin-bottom: 4px;
 
   .scene-item.active & {
     color: var(--ai-primary-color);
-    font-weight: 600;
   }
+}
+
+.scene-summary {
+  font-size: 12px;
+  color: var(--ai-text-secondary);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 /* 右侧内容区 */
@@ -1017,24 +1073,25 @@ onBeforeUnmount(() => {
 }
 
 .scene-content__body {
-  line-height: 2;
-  font-size: 15px;
+  line-height: 2.2;
+  font-size: 16px;
   color: var(--ai-text-primary);
 }
 
 .scene-desc {
-  margin: 0 0 14px;
+  margin: 0 0 18px;
   text-indent: 2em;
 }
 
 .scene-dialogues {
-  margin-top: 24px;
-  padding-top: 16px;
+  margin-top: 28px;
+  padding-top: 20px;
   border-top: 1px dashed var(--ai-border-light);
 }
 
 .dialogue-line {
-  margin-bottom: 10px;
+  margin-bottom: 14px;
+  line-height: 1.8;
 }
 
 .dialogue-speaker {

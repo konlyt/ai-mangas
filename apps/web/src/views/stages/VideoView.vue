@@ -36,7 +36,7 @@ interface VideoShot {
   /** 是否为降级（mock）结果 */
   degraded?: boolean
   /** 重新生成时选择的视频 Provider */
-  regenerateProvider: 'agnes' | 'mock'
+  regenerateProvider: 'zhipu' | 'agnes' | 'mock'
   /** 重新生成请求进行中 */
   regenerating?: boolean
 }
@@ -86,7 +86,8 @@ const motionOptions = [
 ]
 /** 重新生成 Provider 选项（VID-07 降级换模） */
 const providerOptions = [
-  { label: 'agnes（默认）', value: 'agnes' },
+  { label: 'zhipu（默认）', value: 'zhipu' },
+  { label: 'agnes', value: 'agnes' },
   { label: 'mock（降级）', value: 'mock' },
 ]
 
@@ -151,7 +152,7 @@ async function fetchShots(): Promise<void> {
         video_url: shot.video_url as string | undefined,
         status: 'pending' as TaskStatus,
         progress: 0,
-        regenerateProvider: 'agnes' as 'agnes' | 'mock',
+        regenerateProvider: 'zhipu' as 'zhipu' | 'agnes' | 'mock',
       }
     })
     await syncShotTasks()
@@ -238,6 +239,40 @@ function pollTaskStatus(shot: VideoShot, taskId: string, times = 0): void {
   }, POLL_INTERVAL_MS)
 }
 
+/** 全局轮询定时器 */
+let globalPollTimer: number | null = null
+
+/**
+ * 启动全局任务轮询
+ */
+function startGlobalPoll(): void {
+  stopGlobalPoll()
+  globalPollTimer = window.setInterval(async () => {
+    // 检查是否还有进行中的任务
+    const hasRunning = videoShots.value.some(
+      (s) => s.status === 'running' || s.status === 'pending'
+    )
+    if (!hasRunning) {
+      stopGlobalPoll()
+      generating.value = false
+      ElMessage.success('所有视频任务已完成')
+      return
+    }
+    // 自动刷新列表
+    await fetchShots()
+  }, 3000)
+}
+
+/**
+ * 停止全局轮询
+ */
+function stopGlobalPoll(): void {
+  if (globalPollTimer) {
+    clearInterval(globalPollTimer)
+    globalPollTimer = null
+  }
+}
+
 /**
  * 批量提交视频生成
  */
@@ -250,24 +285,13 @@ async function handleBatchGenerate(): Promise<void> {
       resolution: params.resolution,
       duration: 3,
     })
-    // 模拟逐个镜头生成进度
-    let idx = 0
-    const timer = setInterval(() => {
-      if (idx >= videoShots.value.length) {
-        clearInterval(timer)
-        generating.value = false
-        ElMessage.success('视频生成完成')
-        return
-      }
-      const shot = videoShots.value[idx]
-      shot.status = 'running'
-      shot.progress += 10
-      if (shot.progress >= 100) {
-        shot.status = 'success'
-        shot.progress = 100
-        idx++
-      }
-    }, 500)
+    // 标记所有镜头为 pending
+    videoShots.value.forEach((s) => {
+      s.status = 'pending'
+      s.progress = 0
+    })
+    // 启动全局轮询，自动刷新
+    startGlobalPoll()
   } catch (e) {
     generating.value = false
     ElMessage.error('视频生成失败')

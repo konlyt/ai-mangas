@@ -240,14 +240,19 @@ onMounted(() => {
             <span class="masked-key">{{ row.masked_key }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="120">
           <template #default="{ row }: { row: any }">
             <el-tag v-if="row.verified" type="success" size="small">已验证</el-tag>
+            <el-tag v-else-if="row.builtin" type="warning" size="small">系统内置</el-tag>
             <el-tag v-else type="info" size="small">未验证</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" label="创建时间" width="170" />
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column prop="created_at" label="创建时间" width="170">
+          <template #default="{ row }: { row: any }">
+            {{ row.builtin ? '—' : row.created_at }}
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }: { row: any }">
             <el-button
               type="primary"
@@ -258,8 +263,10 @@ onMounted(() => {
             >
               测试连通性
             </el-button>
-            <el-button text size="small" @click="openEditDialog(row)">编辑</el-button>
-            <el-button type="danger" text size="small" @click="handleDelete(row)">删除</el-button>
+            <template v-if="!row.builtin">
+              <el-button text size="small" @click="openEditDialog(row)">编辑</el-button>
+              <el-button type="danger" text size="small" @click="handleDelete(row)">删除</el-button>
+            </template>
           </template>
         </el-table-column>
       </el-table>

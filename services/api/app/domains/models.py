@@ -23,13 +23,26 @@ from app.schemas.model import (
     VerifyKeyRequest,
 )
 
-# 各 provider 的默认 API 地址
-DEFAULT_API_BASES = {
-    "deepseek": "https://api.deepseek.com",
-    "openai": "https://api.openai.com/v1",
-    "siliconflow": "https://api.siliconflow.cn",
-    "volcengine": "https://ark.cn-beijing.volces.com/api/v3",
-}
+def _get_default_api_base(provider: str) -> str:
+    """根据 provider 返回默认 API 基础地址（从 .env settings 读取）。
+
+    Args:
+        provider: 厂商标识（小写）。
+
+    Returns:
+        str: 默认 API 地址，未配置时返回空字符串。
+    """
+    defaults = {
+        "deepseek": settings.DEEPSEEK_BASE_URL,
+        "openai": "https://api.openai.com/v1",
+        "siliconflow": "https://api.siliconflow.cn",
+        "volcengine": "https://ark.cn-beijing.volces.com/api/v3",
+        "agnes": settings.AGNES_BASE_URL,
+        "zhipu": settings.ZHIPU_VIDEO_BASE_URL,
+        "qianwen": settings.QIANWEN_TTS_API_BASE_URL,
+    }
+    return defaults.get(provider, "") or ""
+
 
 # API 连通性测试超时时间（秒）
 VERIFY_TIMEOUT = 10
@@ -172,7 +185,7 @@ async def verify_key(req: VerifyKeyRequest) -> VerifyKeyOut:
         VerifyKeyOut: 测试结果。
     """
     provider = req.provider.lower()
-    api_base = req.api_base or DEFAULT_API_BASES.get(provider, "")
+    api_base = req.api_base or _get_default_api_base(provider)
 
     if not api_base:
         return VerifyKeyOut(valid=False, latency_ms=0, models=[])
@@ -202,7 +215,6 @@ async def verify_key(req: VerifyKeyRequest) -> VerifyKeyOut:
                 if resp.status_code == 200:
                     data = resp.json()
                     models = []
-                    # 尝试从响应中提取模型名
                     model_id = data.get("model")
                     if model_id:
                         models.append(model_id)
@@ -210,26 +222,39 @@ async def verify_key(req: VerifyKeyRequest) -> VerifyKeyOut:
                 else:
                     return VerifyKeyOut(valid=False, latency_ms=latency_ms, models=[])
             else:
-                # 通用：尝试调用 /models 列表接口
-                url = f"{api_base}/models" if not api_base.endswith("/v1") else f"{api_base}/models"
-                # 若 api_base 已含 /v1，直接拼 /models
-                if "/v1" not in api_base:
-                    url = f"{api_base}/v1/models"
-                else:
+                # 通用：尝试调用 /models 列表接口（OpenAI 兼容协议）
+                if "/v1" in api_base:
                     url = f"{api_base}/models"
+                else:
+                    url = f"{api_base}/v1/models"
 
                 resp = await client.get(
                     url,
                     headers={"Authorization": f"Bearer {req.api_key}"},
                 )
                 latency_ms = int((time.time() - start) * 1000)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    model_list = data.get("data", [])
-                    models = [m.get("id", "") for m in model_list if isinstance(m, dict)]
-                    return VerifyKeyOut(valid=True, latency_ms=latency_ms, models=models)
-                else:
+
+                # 401/403 = Key 无效（网关先鉴权，Key 错会直接拒绝）
+                if resp.status_code in (401, 403):
                     return VerifyKeyOut(valid=False, latency_ms=latency_ms, models=[])
+
+                # 200 = 正常返回模型列表
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                        model_list = data.get("data", [])
+                        models = [m.get("id", "") for m in model_list if isinstance(m, dict)]
+                    except Exception:
+                        models = []
+                    return VerifyKeyOut(valid=True, latency_ms=latency_ms, models=models)
+
+                # 其他 4xx（400/404/422）：Key 被网关接受（否则会先返回 401），
+                # 只是路径或参数不匹配，视为连通正常。
+                # 5xx 服务器故障：无法确认，视为无效。
+                if 400 <= resp.status_code < 500:
+                    return VerifyKeyOut(valid=True, latency_ms=latency_ms, models=[])
+
+                return VerifyKeyOut(valid=False, latency_ms=latency_ms, models=[])
     except Exception:
         latency_ms = int((time.time() - start) * 1000)
         return VerifyKeyOut(valid=False, latency_ms=latency_ms, models=[])
@@ -334,18 +359,150 @@ def _mask_key(encrypted: str | None) -> str:
         return "****"
 
 
+def _mask_key_from_raw(raw_key: str) -> str:
+    """将明文 Key 做掩码处理（前4位 + **** + 后4位）。
+
+    Args:
+        raw_key: 明文 Key。
+
+    Returns:
+        str: 掩码后的 Key。
+    """
+    if not raw_key:
+        return "****"
+    if len(raw_key) > 8:
+        return raw_key[:4] + "****" + raw_key[-4:]
+    return "****"
+
+
+def _get_builtin_keys() -> list[dict]:
+    """从 .env 配置中读取系统内置 API Key 列表（掩码显示）。
+
+    Returns:
+        list[dict]: 内置 Key 列表，每项含 id/provider/capability/masked_key/verified/created_at/builtin。
+    """
+    keys = []
+    next_id = -1000
+
+    # DeepSeek 文本
+    if settings.DEEPSEEK_API_KEY:
+        keys.append({
+            "id": next_id,
+            "provider": "deepseek",
+            "capability": "文本",
+            "masked_key": _mask_key_from_raw(settings.DEEPSEEK_API_KEY),
+            "verified": False,
+            "created_at": "",
+            "builtin": True,
+        })
+        next_id += 1
+
+    # Agnes 文本
+    if settings.AGNES_LLM_API_KEY:
+        keys.append({
+            "id": next_id,
+            "provider": "agnes",
+            "capability": "文本",
+            "masked_key": _mask_key_from_raw(settings.AGNES_LLM_API_KEY),
+            "verified": False,
+            "created_at": "",
+            "builtin": True,
+        })
+        next_id += 1
+
+    # Agnes 图像
+    if settings.AGNES_IMAGE_API_KEY:
+        keys.append({
+            "id": next_id,
+            "provider": "agnes",
+            "capability": "图像",
+            "masked_key": _mask_key_from_raw(settings.AGNES_IMAGE_API_KEY),
+            "verified": False,
+            "created_at": "",
+            "builtin": True,
+        })
+        next_id += 1
+
+    # Agnes 视频
+    if settings.AGNES_VIDEO_API_KEY:
+        keys.append({
+            "id": next_id,
+            "provider": "agnes",
+            "capability": "视频",
+            "masked_key": _mask_key_from_raw(settings.AGNES_VIDEO_API_KEY),
+            "verified": False,
+            "created_at": "",
+            "builtin": True,
+        })
+        next_id += 1
+
+    # 智谱视频
+    if settings.ZHIPU_VIDEO_API_KEY:
+        keys.append({
+            "id": next_id,
+            "provider": "zhipu",
+            "capability": "视频",
+            "masked_key": _mask_key_from_raw(settings.ZHIPU_VIDEO_API_KEY),
+            "verified": False,
+            "created_at": "",
+            "builtin": True,
+        })
+        next_id += 1
+
+    # 通义千问语音
+    if settings.QIANWEN_TTS_API_KEY:
+        keys.append({
+            "id": next_id,
+            "provider": "qianwen",
+            "capability": "语音",
+            "masked_key": _mask_key_from_raw(settings.QIANWEN_TTS_API_KEY),
+            "verified": False,
+            "created_at": "",
+            "builtin": True,
+        })
+        next_id += 1
+
+    return keys
+
+
+def _get_builtin_credential(provider: str, capability: str) -> tuple[str, str, str]:
+    """从 .env settings 读取指定内置 Key 的明文凭证。
+
+    Args:
+        provider: 厂商标识（如 agnes / zhipu / qianwen）。
+        capability: 能力中文名（文本 / 图像 / 视频 / 语音）。
+
+    Returns:
+        tuple: (api_key, api_base, model_name)，未配置时对应位置为空字符串。
+    """
+    p = provider.lower()
+    if p == "deepseek" and capability == "文本":
+        return settings.DEEPSEEK_API_KEY, settings.DEEPSEEK_BASE_URL, settings.DEEPSEEK_MODEL or "deepseek-flash"
+    if p == "agnes" and capability == "文本":
+        return settings.AGNES_LLM_API_KEY, settings.AGNES_BASE_URL, settings.AGNES_LLM_MODEL or "agnes-3.0-flash"
+    if p == "agnes" and capability == "图像":
+        return settings.AGNES_IMAGE_API_KEY, settings.AGNES_BASE_URL, settings.AGNES_IMAGE_MODEL or "agnes-image-2.5-flash"
+    if p == "agnes" and capability == "视频":
+        return settings.AGNES_VIDEO_API_KEY, settings.AGNES_VIDEO_BASE_URL, settings.AGNES_VIDEO_MODEL or "agnes-video-2.5-flash"
+    if p == "zhipu" and capability == "视频":
+        return settings.ZHIPU_VIDEO_API_KEY, settings.ZHIPU_VIDEO_BASE_URL, settings.ZHIPU_VIDEO_MODEL or "cogvideox-3"
+    if p == "qianwen" and capability == "语音":
+        return settings.QIANWEN_TTS_API_KEY, settings.QIANWEN_TTS_API_BASE_URL, settings.QIANWEN_TTS_MODEL or "qwen3-tts-instruct-flash"
+    return "", "", ""
+
+
 async def list_user_keys(db: AsyncSession, user_id: int) -> list[dict]:
     """查询当前用户的 API Key 列表（掩码显示）。
 
     返回用户级（user_id 匹配且 project_id 为空）的 Key 配置，
-    字段结构与前端 API Key 管理页约定一致。
+    合并 .env 配置的系统内置 Key（标记为 builtin，不可删除）。
 
     Args:
         db: 异步数据库会话。
         user_id: 用户 ID。
 
     Returns:
-        list[dict]: Key 列表，每项含 id/provider/capability/masked_key/verified/created_at。
+        list[dict]: Key 列表，每项含 id/provider/capability/masked_key/verified/created_at/builtin。
     """
     result = await db.execute(
         select(ModelConfig).where(
@@ -355,7 +512,7 @@ async def list_user_keys(db: AsyncSession, user_id: int) -> list[dict]:
     )
     configs = result.scalars().all()
 
-    return [
+    items = [
         {
             "id": cfg.id,
             "provider": cfg.provider,
@@ -363,9 +520,19 @@ async def list_user_keys(db: AsyncSession, user_id: int) -> list[dict]:
             "masked_key": _mask_key(cfg.api_key_encrypted),
             "verified": bool((cfg.params or {}).get("verified", False)),
             "created_at": cfg.created_at.isoformat() if cfg.created_at else "",
+            "builtin": False,
         }
         for cfg in configs
     ]
+
+    # 合并 .env 配置的系统内置 Key（用户已配置的优先，不重复添加）
+    builtin_keys = _get_builtin_keys()
+    existing = {(k["provider"], k["capability"]) for k in items}
+    for bk in builtin_keys:
+        if (bk["provider"], bk["capability"]) not in existing:
+            items.append(bk)
+
+    return items
 
 
 def _capability_to_cn(capability: ModelCapability) -> str:
@@ -533,7 +700,7 @@ async def verify_user_key(db: AsyncSession, user_id: int, key_id: int) -> Verify
     Args:
         db: 异步数据库会话。
         user_id: 用户 ID。
-        key_id: Key 记录 ID。
+        key_id: Key 记录 ID（负数表示系统内置 Key，从 .env 读取）。
 
     Returns:
         VerifyKeyOut: 测试结果（是否有效、耗时、可用模型）。
@@ -541,6 +708,25 @@ async def verify_user_key(db: AsyncSession, user_id: int, key_id: int) -> Verify
     Raises:
         BizException: Key 不存在或不属于当前用户时抛出 NOT_FOUND。
     """
+    # 系统内置 Key（负数 ID）：不查数据库，直接从 .env 读取凭证测试
+    if key_id < 0:
+        builtin_keys = _get_builtin_keys()
+        match = next((k for k in builtin_keys if k["id"] == key_id), None)
+        if match is None:
+            raise BizException(code=ErrorCode.NOT_FOUND, message="API Key 不存在")
+        provider = match["provider"]
+        capability = match["capability"]
+        api_key, api_base, model_name = _get_builtin_credential(provider, capability)
+        if not api_key:
+            return VerifyKeyOut(valid=False, latency_ms=0, models=[])
+        req = VerifyKeyRequest(
+            provider=provider,
+            model_name=model_name,
+            api_key=api_key,
+            api_base=api_base,
+        )
+        return await verify_key(req)
+
     result = await db.execute(
         select(ModelConfig).where(
             ModelConfig.id == key_id,

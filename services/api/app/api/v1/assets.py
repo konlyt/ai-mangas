@@ -132,6 +132,31 @@ async def delete_character(
     return ok(message="删除成功")
 
 
+@router.post("/{id}/assets/characters/{cid}/regenerate", summary="重新生成单个角色（换一张）")
+async def regenerate_character(
+    id: int,
+    cid: int,
+    req: AssetRegenerateRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """重新生成单个角色的主图（换一张），不影响其他角色。
+
+    Args:
+        id: 项目 ID。
+        cid: 角色 ID。
+        req: 重生成请求体（可含新的视觉提示词）。
+        db: 异步数据库会话。
+        user: 当前登录用户。
+
+    Returns:
+        dict: 统一响应结构，data 为更新后的角色信息。
+    """
+    visual_prompt = req.visual_prompt if req else None
+    character = await assets_domain.regenerate_character(db, id, cid, visual_prompt)
+    return ok(data=character.model_dump())
+
+
 @router.post("/{id}/assets/{asset_id}/reference", summary="上传角色参考图")
 async def upload_reference(
     id: int,

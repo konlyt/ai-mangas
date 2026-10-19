@@ -69,6 +69,25 @@ export function deleteCharacter(id: string, cid: string): Promise<void> {
 }
 
 /**
+ * 重新生成单个角色（换一张）
+ * @param id - 项目 ID
+ * @param cid - 角色 ID
+ * @param visualPrompt - 可选的新视觉提示词
+ * @returns 更新后的角色信息
+ */
+export function regenerateCharacter(
+  id: string,
+  cid: string,
+  visualPrompt?: string
+): Promise<Character> {
+  return request.post(
+    `/projects/${id}/assets/characters/${cid}/regenerate`,
+    { visual_prompt: visualPrompt },
+    { timeout: 300000 }
+  )
+}
+
+/**
  * 上传角色参考图（multipart，jpg/png/webp，≤5MB）
  * @param projectId - 项目 ID
  * @param assetId - 角色 ID

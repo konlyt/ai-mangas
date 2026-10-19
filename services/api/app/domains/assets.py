@@ -673,3 +673,95 @@ async def get_consistency(db: AsyncSession, project_id: int) -> List[Dict[str, A
         }
         for r in reports
     ]
+
+async def regenerate_character(
+    db: AsyncSession,
+    project_id: int,
+    character_id: int,
+    visual_prompt: Optional[str] = None,
+) -> CharacterOut:
+    """重新生成单个角色的主图（换一张）。
+
+    找到该角色的主定妆照变体（front 类型），调用图像生成 Provider 重新生成，
+    不影响其他角色。
+
+    Args:
+        db: 异步数据库会话。
+        project_id: 项目 ID。
+        character_id: 角色 ID。
+        visual_prompt: 新的视觉提示词，为空时使用原提示词。
+
+    Returns:
+        CharacterOut: 更新后的角色信息。
+
+    Raises:
+        BizException: 角色不存在时抛出 NOT_FOUND。
+    """
+    # 校验角色存在且属于该项目
+    character = await db.get(Character, character_id)
+    if character is None or character.project_id != project_id:
+        raise BizException(code=ErrorCode.NOT_FOUND, message="角色不存在")
+
+    # 查找该角色的主图变体（front 类型）
+    result = await db.execute(
+        select(AssetVariant).where(
+            AssetVariant.owner_type == AssetOwnerType.CHARACTER,
+            AssetVariant.owner_id == character_id,
+            AssetVariant.variant_type == "front",
+        )
+    )
+    variant = result.scalar_one_or_none()
+
+    if variant is None:
+        # 如果没有 front 变体，取第一个变体
+        result = await db.execute(
+            select(AssetVariant).where(
+                AssetVariant.owner_type == AssetOwnerType.CHARACTER,
+                AssetVariant.owner_id == character_id,
+            ).limit(1)
+        )
+        variant = result.scalar_one_or_none()
+
+    if variant is None:
+        raise BizException(code=ErrorCode.NOT_FOUND, message="角色主图变体不存在")
+
+    # 标记生成中
+    variant.status = AssetVariantStatus.GENERATING
+    await db.commit()
+
+    # 调用图像生成
+    provider = _get_image_provider()
+    prompt = visual_prompt or variant.visual_prompt or ""
+    try:
+        image_url = await provider.generate(prompt)
+        variant.image_url = image_url
+        if visual_prompt:
+            variant.visual_prompt = visual_prompt
+        variant.status = AssetVariantStatus.DONE
+        variant.feature_vector = [0.0] * 16
+        # 同步更新 character 表的 main_asset_url 字段（数据库字段）
+        character.main_asset_url = image_url
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"[assets] 角色 {character_id} 重生成失败: {exc}")
+        variant.status = AssetVariantStatus.FAILED
+        raise BizException(code=ErrorCode.INTERNAL, message=f"生成失败: {exc}")
+
+    await db.commit()
+    await db.refresh(variant)
+    await db.refresh(character)
+
+    # 重新查询所有变体并返回角色信息
+    var_result = await db.execute(
+        select(AssetVariant).where(
+            AssetVariant.owner_type == AssetOwnerType.CHARACTER,
+            AssetVariant.owner_id == character_id,
+        )
+    )
+    variants = var_result.scalars().all()
+
+    # 同步更新主图 URL（main_asset_url 是动态字段，需要从 front 变体提取）
+    front = next((v for v in variants if v.variant_type == "front"), None)
+    if front and front.image_url:
+        character.main_asset_url = front.image_url
+
+    return _build_character_out(character, variants)

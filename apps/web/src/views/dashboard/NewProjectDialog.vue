@@ -75,6 +75,110 @@ const stylePresets = ['写实', '二次元', '赛博朋克', '水墨', '油画',
 /** 输出比例选项 */
 const ratioOptions = ['9:16', '16:9', '1:1']
 
+/** 爆款剧本模板库 */
+const templateLibrary = [
+  {
+    id: 'apocalypse-rebirth',
+    title: '末日重生',
+    desc: '重生回到末日爆发前，携前世记忆囤货求生',
+    tag: '重生/末世',
+    icon: '🌍',
+    idea: '主角重生回到末日爆发前三天，带着前世记忆疯狂囤货、加固避难所，在丧尸遍地的末世中建立安全区，同时揭露末日背后的阴谋',
+    genre: '科幻',
+    style: '写实',
+  },
+  {
+    id: 'sweet-pet',
+    title: '甜宠恋爱',
+    desc: '霸道总裁爱上我，超甜日常',
+    tag: '甜宠/都市',
+    icon: '💕',
+    idea: '普通女孩意外入职顶级集团，被高冷霸道总裁缠上，从互相看不顺眼到花式撒糖，每天都是高甜日常',
+    genre: '都市',
+    style: '二次元',
+  },
+  {
+    id: 'cultivation',
+    title: '修仙逆袭',
+    desc: '废柴少年踏上修仙路，一路逆袭成至尊',
+    tag: '修仙/逆袭',
+    icon: '⚔️',
+    idea: '出身低微的废柴少年意外获得上古传承，从宗门最底层开始，一路斩妖除魔、逆袭登顶，最终成为修仙界至尊',
+    genre: '古风',
+    style: '水墨',
+  },
+  {
+    id: 'revenge',
+    title: '复仇爽文',
+    desc: '被背叛后强势归来，让仇人付出代价',
+    tag: '复仇/爽文',
+    icon: '🔥',
+    idea: '主角被最信任的兄弟和爱人联手背叛，家破人亡后侥幸生还，几年后以全新身份强势归来，步步为营让仇人付出惨痛代价',
+    genre: '都市',
+    style: '写实',
+  },
+  {
+    id: 'cyberpunk',
+    title: '赛博朋克',
+    desc: '霓虹都市中的义体侦探，追查离奇案件',
+    tag: '科幻/赛博',
+    icon: '🌃',
+    idea: '在霓虹灯闪烁的未来都市，半机械侦探接受委托追查一起离奇的义体杀人案，逐渐揭开巨型企业的黑暗秘密',
+    genre: '科幻',
+    style: '赛博朋克',
+  },
+  {
+    id: 'school-romance',
+    title: '校园青春',
+    desc: '青涩校园恋爱，同桌的你',
+    tag: '校园/青春',
+    icon: '🎓',
+    idea: '转学来到新学校的内向少女，和阳光开朗的同桌从陌生到熟悉，一起经历考试、运动会、毕业季，写下最美好的青春回忆',
+    genre: '校园',
+    style: '二次元',
+  },
+  {
+    id: 'mystery',
+    title: '悬疑推理',
+    desc: '天才侦探破解连环谜案',
+    tag: '悬疑/推理',
+    icon: '🔍',
+    idea: '拥有惊人观察力的天才少年侦探，被卷入一桩连环密室杀人案，在警方和媒体的重重压力下，抽丝剥茧找出真凶',
+    genre: '悬疑',
+    style: '写实',
+  },
+  {
+    id: 'vampire',
+    title: '奇幻恋爱',
+    desc: '吸血鬼贵族与人类少女的禁忌之恋',
+    tag: '奇幻/恋爱',
+    icon: '🦇',
+    idea: '普通女大学生意外救下受伤的神秘男子，发现对方是活了千年的吸血鬼贵族，两人在人类与吸血鬼的世界之间挣扎相爱',
+    genre: '奇幻',
+    style: '油画',
+  },
+  {
+    id: 'game-esport',
+    title: '电竞热血',
+    desc: '落魄少年重返电竞巅峰',
+    tag: '电竞/热血',
+    icon: '🎮',
+    idea: '曾经的天才电竞少年因伤退役，在网吧打工时偶遇一支草根战队，重新踏上职业赛场，一路逆袭夺回世界冠军',
+    genre: '热血',
+    style: '二次元',
+  },
+  {
+    id: 'ancient-romance',
+    title: '古言虐恋',
+    desc: '侯门嫡女与王爷的爱恨纠缠',
+    tag: '古言/虐恋',
+    icon: '🌸',
+    idea: '侯府嫡女被迫嫁给冷面王爷，新婚夜被冷落，在深宅大院中步步为营，从互相防备到深陷爱河，经历重重波折',
+    genre: '古风',
+    style: '水墨',
+  },
+]
+
 /** 最终体裁：自定义体裁优先于预设 */
 const finalGenre = computed(() => form.customGenre || form.genre)
 
@@ -152,6 +256,19 @@ function beforeUpload(file: UploadRawFile): boolean {
 function handleRemove(): void {
   form.fileName = ''
   form.outline = ''
+}
+
+/**
+ * 选择爆款模板，自动填充表单
+ * @param tpl - 模板对象
+ */
+function applyTemplate(tpl: typeof templateLibrary[0]): void {
+  inputMode.value = 'idea'
+  form.idea = tpl.idea
+  form.title = tpl.title
+  form.genre = tpl.genre
+  form.style = tpl.style
+  ElMessage.success(`已选择「${tpl.title}」模板，可直接下一步或微调`)
 }
 
 /**
@@ -233,6 +350,27 @@ watch(
 
     <!-- 步骤一：输入创意 -->
     <div v-show="activeStep === 0" class="step-content">
+      <!-- 爆款模板库 -->
+      <div class="template-section">
+        <div class="template-header">
+          <span class="template-title">不知道写什么？试试爆款模板</span>
+          <span class="template-hint">点击一键填充</span>
+        </div>
+        <div class="template-grid">
+          <div
+            v-for="tpl in templateLibrary"
+            :key="tpl.id"
+            class="template-card"
+            @click="applyTemplate(tpl)"
+          >
+            <div class="template-icon">{{ tpl.icon }}</div>
+            <div class="template-name">{{ tpl.title }}</div>
+            <div class="template-desc">{{ tpl.desc }}</div>
+            <el-tag size="small" effect="plain" class="template-tag">{{ tpl.tag }}</el-tag>
+          </div>
+        </div>
+      </div>
+
       <!-- 输入模式选择 -->
       <el-radio-group v-model="inputMode" class="mode-group">
         <el-radio-button label="idea">一句话创意</el-radio-button>
@@ -363,15 +501,88 @@ watch(
 
 <style scoped>
 .dialog-steps {
-  margin-bottom: 28px;
+  margin-bottom: 20px;
 }
 
 .step-content {
   min-height: 200px;
 }
 
+/* 爆款模板库 */
+.template-section {
+  margin-bottom: 24px;
+}
+
+.template-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.template-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ai-text-primary);
+}
+
+.template-hint {
+  font-size: 12px;
+  color: var(--ai-text-secondary);
+}
+
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+}
+
+.template-card {
+  padding: 12px 10px;
+  border: 1px solid var(--ai-border-light);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: center;
+  background: #fff;
+
+  &:hover {
+    border-color: var(--ai-primary-color);
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.15);
+    transform: translateY(-2px);
+  }
+}
+
+.template-icon {
+  font-size: 24px;
+  margin-bottom: 6px;
+}
+
+.template-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ai-text-primary);
+  margin-bottom: 4px;
+}
+
+.template-desc {
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+  line-height: 1.4;
+  margin-bottom: 6px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 28px;
+}
+
+.template-tag {
+  font-size: 10px;
+}
+
 .mode-group {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .upload-icon {
