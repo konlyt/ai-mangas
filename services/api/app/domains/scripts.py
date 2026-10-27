@@ -100,7 +100,7 @@ async def generate_script(
         logger.info(f"[script-generate] 手动调用 DeepSeek API: model={deepseek_model}, key={deepseek_api_key[:10]}...")
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=120.0, trust_env=False) as client:
                 async with client.stream(
                     "POST",
                     f"{deepseek_base_url}/v1/chat/completions",
@@ -157,6 +157,32 @@ async def generate_script(
                 "characters": [],
                 "scenes": [],
             }
+
+        # 结构兜底：LLM 偶尔不返回外层包装（直接返回单个场景对象），
+        # 或 scenes 缺失/为空时自动包装，保证前端能正常渲染。
+        if isinstance(content, dict):
+            # 情况1：content 本身就是一个场景对象（有 seq/title/description，没有 scenes）
+            if "scenes" not in content and "seq" in content and "description" in content:
+                content = {
+                    "title": content.get("title") or project.title,
+                    "logline": "",
+                    "characters": [],
+                    "scenes": [content],
+                }
+            # 情况2：有 scenes 但为空数组，且 content 里有 raw_text 类字段
+            elif isinstance(content.get("scenes"), list) and len(content["scenes"]) == 0:
+                # 尝试把整个 content 包成一场
+                content["scenes"] = [{
+                    "seq": 1,
+                    "title": content.get("title") or project.title,
+                    "description": content.get("raw") or content.get("description") or "",
+                }]
+            # 情况3：补齐缺失字段
+            content.setdefault("title", project.title)
+            content.setdefault("logline", "")
+            content.setdefault("characters", [])
+            if not isinstance(content.get("scenes"), list):
+                content["scenes"] = []
 
         # 存储剧本
         script = Script(

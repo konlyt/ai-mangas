@@ -55,7 +55,7 @@ async def storyboard_agent_node(state: ProductionState) -> dict:
         char_names = "、".join(c.get("name", "") for c in characters)
         scene_name = scenes[0].get("name", "") if scenes else ""
         prompt = (
-            f"动漫分镜，{sc.get('description', '')}；"
+            f"单张电影关键帧画面，{sc.get('description', '')}；"
             f"角色：{char_names}；场景：{scene_name}；"
             f"景别：{shot_types[idx % len(shot_types)]}；"
             f"运镜：{camera_movements[idx % len(camera_movements)]}。"

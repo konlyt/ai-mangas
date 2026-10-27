@@ -54,7 +54,9 @@ def perceptual_hash(image_bytes: bytes) -> str:
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"图像解码失败，无法计算感知哈希: {exc}") from exc
 
-    pixels = list(img.getdata())
+    # L 模式下 tobytes() 返回每像素 1 字节的原始灰度数据（8x8 图共 64 字节），
+    # 等价替代 Pillow 13 将移除的 Image.getdata()（Deprecated）
+    pixels = list(img.tobytes())
     avg = sum(pixels) / len(pixels)
 
     # 均值二值化：亮于均值为 1，否则为 0

@@ -48,11 +48,13 @@ const PROVIDER_META: Record<string, { price: string; speed: '快' | '中' | '慢
 }
 
 /**
- * 获取当前项目 ID（优先路由参数，其次 store）
+ * 获取当前项目 ID（优先路由参数，其次 store；store 中 id 为 number，统一转为字符串）
  * @returns 项目 ID，不存在时返回空字符串
  */
 const currentProjectId = computed<string>(() => {
-  return (route.params.id as string) || projectStore.currentProject?.id || ''
+  return (
+    (route.params.id as string) || String(projectStore.currentProject?.id ?? '')
+  )
 })
 
 /**

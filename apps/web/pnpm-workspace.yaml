@@ -1,0 +1,6 @@
+allowBuilds:
+  '@parcel/watcher': true
+  esbuild: true
+  vue-demi: true
+patchedDependencies:
+  '@vue-flow/core@1.48.2': patches/@vue-flow__core@1.48.2.patch

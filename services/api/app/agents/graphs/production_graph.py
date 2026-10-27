@@ -136,6 +136,9 @@ def _make_interrupt_wrapper(name: str, func: Callable) -> Callable:
     async def wrapper(state: ProductionState) -> dict:
         """包装节点：先触发中断，恢复后执行原函数。
 
+        interrupt() 在首次执行时抛出 GraphInterrupt 使图暂停；
+        以 Command(resume=...) 恢复时，该调用返回恢复负载（人工确认内容）。
+
         Args:
             state: 当前生产状态。
 
@@ -144,7 +147,9 @@ def _make_interrupt_wrapper(name: str, func: Callable) -> Callable:
         """
         if _HAS_LANGGRAPH and interrupt is not None:
             logger.info(f"[graph] 进入节点 {name} 前触发 interrupt，等待人工审核")
-            interrupt({"node": name, "message": f"请人工审核后继续执行 {name}"})
+            resume_payload = interrupt({"node": name, "message": f"请人工审核后继续执行 {name}"})
+            if resume_payload is not None:
+                logger.info(f"[graph] 节点 {name} 收到人工确认负载 resume={resume_payload}")
         delta = await func(state)
         return delta
 

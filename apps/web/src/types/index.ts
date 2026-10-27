@@ -63,7 +63,7 @@ export interface UserQuota {
   vip_level: number
 }
 
-/** 用户使用量统计 */
+/** 用户使用量统计（对齐后端 UsageOut） */
 export interface UserUsage {
   /** 项目总数 */
   project_count: number
@@ -72,6 +72,16 @@ export interface UserUsage {
   /** 视频时长（秒） */
   video_duration: number
   /** 累计消耗点数 */
+  cost_points: number
+  /** 按日统计数组 */
+  daily: DailyUsageItem[]
+}
+
+/** 单日用量明细（对齐后端 DailyUsage） */
+export interface DailyUsageItem {
+  /** 日期（YYYY-MM-DD） */
+  date: string
+  /** 当日消耗点数 */
   cost_points: number
 }
 
@@ -187,7 +197,7 @@ export interface Script {
   updated_at: string
 }
 
-/** 剧本分场 */
+/** 剧本分场（content 结构化 JSON 解析出的场次项） */
 export interface ScriptScene {
   /** 场次序号 */
   seq: number
@@ -195,9 +205,25 @@ export interface ScriptScene {
   title: string
   /** 场次描述 */
   description: string
+  /** 场次缩略图 URL（LLM 生成 content 时可能附带） */
+  thumbnail?: string
+  /** 场次梗概（LLM 生成 content 时可能附带） */
+  summary?: string
 }
 
-/** 角色信息 */
+/** 角色一致性锚点（对齐后端 character_locks JSON 列：不可变锚点四项） */
+export interface CharacterLocks {
+  /** 服饰锚点 */
+  costume?: string
+  /** 发型锚点 */
+  hairstyle?: string
+  /** 外貌锚点 */
+  appearance?: string
+  /** 体型锚点 */
+  body_type?: string
+}
+
+/** 角色信息（对齐后端 CharacterOut） */
 export interface Character {
   /** 角色 ID */
   id: string
@@ -207,11 +233,19 @@ export interface Character {
   description: string
   /** 角色参考图 URL */
   image_url?: string
-  /** 是否锁定（锁定后不可再生成） */
-  locked: boolean
+  /** 主定妆照 URL（后端 main_asset_url） */
+  main_asset_url?: string
+  /** 四视图参考板 URL（头特写/正面/右侧90°/背面四宫格，未生成时为 null） */
+  ref_board_url?: string | null
+  /** 一致性不可变锚点（服饰/发型/外貌/体型，未生成时为 null） */
+  character_locks?: CharacterLocks | null
+  /** 是否锁定（后端 is_locked：0 未锁 / 非 0 已锁） */
+  is_locked?: number
+  /** 旧版锁定标记（后端不再返回，保留为可选以兼容存量代码的回退读取） */
+  locked?: boolean
 }
 
-/** 场景信息 */
+/** 场景信息（对齐后端 SceneOut） */
 export interface Scene {
   /** 场景 ID */
   id: string
@@ -221,22 +255,88 @@ export interface Scene {
   description: string
   /** 场景参考图 URL */
   image_url?: string
+  /** 主视觉 URL（兼容字段：详情抽屉中与角色联合渲染；后端场景实际字段为 asset_url） */
+  main_asset_url?: string
 }
 
-/** 分镜信息 */
+/** 分镜状态（对齐后端 StoryboardStatus 枚举） */
+export type StoryboardStatus = 'pending' | 'generating' | 'done' | 'failed'
+
+/** 分镜信息（对齐后端 StoryboardOut：单条分镜记录，列表接口返回 Storyboard[]） */
 export interface Storyboard {
   /** 分镜 ID */
-  id: string
+  id: number
   /** 项目 ID */
-  project_id: string
-  /** 分镜列表 */
-  shots: StoryboardShot[]
+  project_id: number
+  /** 剧本 ID */
+  script_id: number
+  /** 剧集 ID */
+  episode_id?: number | null
+  /** 镜头序号 */
+  sequence: number
+  /** 景别 */
+  shot_type?: string | null
+  /** 运镜方式 */
+  camera_movement?: string | null
+  /** 预计时长（秒） */
+  duration: number
+  /** 画面描述 */
+  visual_description?: string | null
+  /** 对白 / 旁白 */
+  dialogue?: string | null
+  /** 涉及角色 ID 列表 */
+  character_ids?: number[] | null
+  /** 场景 ID */
+  scene_id?: number | null
+  /** 绘图提示词 */
+  prompt?: string | null
+  /** 首帧 URL */
+  keyframe_url?: string | null
+  /** 尾帧 URL */
+  endframe_url?: string | null
+  /** 视频片段 URL */
+  video_url?: string | null
+  /** 配音 URL */
+  audio_url?: string | null
+  /** 状态 */
+  status: StoryboardStatus
+  /** 创建时间 */
+  created_at: string
   /** 更新时间 */
   updated_at: string
 }
 
-/** 分镜单帧 */
+/**
+ * 分镜更新请求参数（对齐后端 StoryboardUpdateRequest）
+ * 所有字段均可选，仅传入需要更新的字段
+ */
+export interface StoryboardUpdateParams {
+  /** 景别 */
+  shot_type?: string
+  /** 运镜方式 */
+  camera_movement?: string
+  /** 预计时长（秒） */
+  duration?: number
+  /** 画面描述 */
+  visual_description?: string
+  /** 对白 / 旁白 */
+  dialogue?: string
+  /** 涉及角色 ID 列表 */
+  character_ids?: number[]
+  /** 场景 ID */
+  scene_id?: number
+  /** 绘图提示词 */
+  prompt?: string
+}
+
+/**
+ * @deprecated 旧版分镜镜头结构（{seq, description, camera_move...}）。
+ * 后端实际返回 StoryboardOut（见 {@link Storyboard}），仅存量视图
+ * （KeyframeView 等）仍以本地行形式使用，新代码请使用 Storyboard。
+ */
 export interface StoryboardShot {
+  /** 分镜数据库 ID（后端 storyboard.id） */
+  id?: number
   /** 镜头序号 */
   seq: number
   /** 镜头描述 */
@@ -251,6 +351,39 @@ export interface StoryboardShot {
   narration?: string
   /** 参考图 URL */
   image_url?: string
+  /** 生成时真实注入的参考角色名列表（graph state 分镜标记，DB 数据可能缺省） */
+  ref_character_names?: string[]
+  /** 注入的参考图数量（graph state 分镜标记） */
+  ref_count?: number
+  /** 参考图是否被 Provider 降级丢弃（i2i 失败回退纯 t2i） */
+  ref_dropped?: boolean
+}
+
+/** 一致性校验模式（方案 A5/A6：ref_lock 参考锁定 / feature_card 特征卡 / quality_gate 基础质检） */
+export type ConsistencyCheckMode = 'ref_lock' | 'feature_card' | 'quality_gate'
+
+/** 一致性校验报告项（state.consistency.reports 与 DB 落库报告的并集结构） */
+export interface ConsistencyReportItem {
+  /** 校验对象类型：asset（角色资产）/ keyframe（分镜关键帧） */
+  subject_type: string
+  /** 校验对象名称：角色名 / "分镜#N" / 多角色逐角色报告 "分镜#N·角色名" */
+  subject_name?: string | null
+  /** 校验对象 ID（DB 数据提供；state 报告可能缺省） */
+  subject_id?: number | null
+  /** 综合相似度得分（0~1，无法比对时为 null） */
+  similarity_score?: number | null
+  /** 判定阈值 */
+  threshold?: number
+  /** 处置动作：pass 通过 / regenerate 待重生成 / manual 人工关注 */
+  action: string
+  /** 校验模式（state 数据直接携带；DB 兜底数据由后端启发式推断补充） */
+  check_mode?: ConsistencyCheckMode | null
+  /** 附加说明（如 ref_lock 低分不自动重生成的提示） */
+  note?: string
+  /** 失败原因（图像比对失败等） */
+  error?: string
+  /** 报告生成时间（DB 数据提供） */
+  created_at?: string | null
 }
 
 /** AI 模型信息 */

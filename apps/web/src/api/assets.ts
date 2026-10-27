@@ -5,7 +5,7 @@
  */
 
 import request from './request'
-import type { Character, Scene } from '@/types'
+import type { Character, CharacterLocks, Scene, ConsistencyReportItem } from '@/types'
 
 /** 含参考图的角色信息（在 Character 基础上扩展后端 reference_url 字段） */
 export interface CharacterWithReference extends Character {
@@ -106,10 +106,37 @@ export function uploadReference(
 }
 
 /**
+ * 更新角色一致性锚点（整体替换语义：空串/未提供的键被清空）
+ * @param projectId - 项目 ID
+ * @param characterId - 角色 ID
+ * @param locks - 四项锚点（costume/hairstyle/appearance/body_type，空串=清空对应项）
+ * @returns 更新后的锚点字典
+ */
+export function updateCharacterLocks(
+  projectId: string,
+  characterId: string,
+  locks: CharacterLocks
+): Promise<CharacterLocks> {
+  return request.put(`/projects/${projectId}/assets/characters/${characterId}/locks`, locks)
+}
+
+/**
  * 获取项目场景列表
  * @param id - 项目 ID
  * @returns 场景列表
  */
 export function getScenes(id: string): Promise<Scene[]> {
   return request.get(`/projects/${id}/assets/scenes`)
+}
+
+/**
+ * 查询项目一致性校验报告（DB 落库数据）
+ * 说明：check_mode 已由后端 consistency_agent 真实落库
+ * （ConsistencyReport.check_mode 列），组装时直接读列，
+ * 列为 NULL 时回退 'quality_gate'
+ * @param id - 项目 ID
+ * @returns 一致性报告列表
+ */
+export function getConsistency(id: string): Promise<ConsistencyReportItem[]> {
+  return request.get(`/projects/${id}/consistency`)
 }

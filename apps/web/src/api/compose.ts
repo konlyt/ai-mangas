@@ -16,6 +16,8 @@ export interface ComposeParams {
   bgm_url?: string
   /** 音量 */
   volume?: number
+  /** 音频来源模式：auto=有配音用配音否则保留原声；keep_original=全部保留原声；tts=全部用配音 */
+  audio_mode?: 'auto' | 'keep_original' | 'tts'
 }
 
 /** 合成输出结果 */

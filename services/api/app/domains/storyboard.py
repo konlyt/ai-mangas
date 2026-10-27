@@ -95,6 +95,21 @@ async def generate_storyboard(
                 if text:
                     dialogue_lines.append(text)
             dialogue = "\n".join(dialogue_lines)
+        # 兜底：dialogue 仍为空时，从 description 提取"角色：台词"行
+        if not dialogue and description:
+            import re
+            lines = []
+            for raw in description.splitlines():
+                raw = raw.strip()
+                if not raw or raw.startswith("△"):
+                    continue
+                m = re.match(r"^([^：:（(]{1,10})(?:（[^）]*）)?[：:](.+)$", raw)
+                if m:
+                    speaker = m.group(1).strip()
+                    speech = m.group(2).strip()
+                    if speaker and speech:
+                        lines.append(f"{speaker}：{speech}")
+            dialogue = "\n".join(lines)
         prompt = (
             f"动漫分镜，{description}；"
             f"景别：{shot_types[idx % len(shot_types)]}；"

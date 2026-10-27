@@ -8,10 +8,12 @@
 
 from typing import Optional
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.providers.image.agnes import AgnesImageProvider
 from app.providers.image.base import ImageProvider
 from app.providers.image.mock import MockImageProvider
+from app.providers.image.seedream import SeedreamImageProvider
 
 logger = get_logger()
 
@@ -25,16 +27,23 @@ class ImageProviderRegistry:
     """
 
     def __init__(self) -> None:
-        """初始化注册表并注册 agnes（默认）与 mock Provider。
+        """初始化注册表并注册 seedream/agnes（默认）与 mock Provider。
+
+        默认 Provider 选择逻辑：已配置 APIMART_API_KEY 时默认 seedream
+        （2026-10-19 实测：原生多参考图 i2i 可用、成本约为 Agnes 体系 1/6）；
+        否则回退 agnes，两者内部均会在未配置凭证/调用失败时自动降级 mock。
 
         Returns:
             None
         """
         self._providers: dict[str, ImageProvider] = {}
-        # 默认使用 Agnes 真实生成；其内部在未配置 Key/调用失败时自动降级 mock
-        self._default: str = "agnes"
         self.register("mock", MockImageProvider())
         self.register("agnes", AgnesImageProvider())
+        self.register("seedream", SeedreamImageProvider())
+        if (settings.APIMART_API_KEY or "").strip():
+            self._default: str = "seedream"
+        else:
+            self._default = "agnes"
 
     def register(self, name: str, provider: ImageProvider) -> None:
         """注册一个图像生成 Provider。

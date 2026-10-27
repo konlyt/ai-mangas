@@ -14,12 +14,15 @@ class ComposeRequest(BaseModel):
 
     Attributes:
         storyboard_ids: 要合成的分镜 ID 列表，为空时合成全部分镜。
-        with_audio: 是否合成配音。
+        audio_mode: 后期音频来源模式：
+            auto（默认）：有 TTS 配音的分镜用 TTS，其余保留原视频原声；
+            keep_original：全部保留原视频原声，忽略 TTS；
+            tts：全部使用 TTS 配音（无 TTS 回退原声）。
         params: 额外合成参数（分辨率、帧率等）。
     """
 
     storyboard_ids: Optional[List[int]] = Field(None, description="分镜 ID 列表，为空时合成全部")
-    with_audio: bool = Field(True, description="是否合成配音")
+    audio_mode: Optional[str] = Field("auto", description="音频来源模式：auto / keep_original / tts")
     params: Optional[Dict[str, Any]] = Field(None, description="额外合成参数")
 
 

@@ -216,7 +216,7 @@ onMounted(() => {
         <el-card shadow="hover" class="stat-card">
           <div class="stat-icon video"><el-icon><VideoPlay /></el-icon></div>
           <div class="stat-info">
-            <div class="stat-value">{{ usage?.video_seconds ?? 0 }}</div>
+            <div class="stat-value">{{ usage?.video_duration ?? 0 }}</div>
             <div class="stat-label">视频时长（秒）</div>
           </div>
         </el-card>
@@ -225,17 +225,17 @@ onMounted(() => {
         <el-card shadow="hover" class="stat-card">
           <div class="stat-icon image"><el-icon><Picture /></el-icon></div>
           <div class="stat-info">
-            <div class="stat-value">{{ usage?.images_count ?? 0 }}</div>
+            <div class="stat-value">{{ usage?.image_count ?? 0 }}</div>
             <div class="stat-label">图片数量</div>
           </div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card shadow="hover" class="stat-card">
-          <div class="stat-icon audio"><el-icon><Microphone /></el-icon></div>
+          <div class="stat-icon audio"><el-icon><Coin /></el-icon></div>
           <div class="stat-info">
-            <div class="stat-value">{{ usage?.audio_seconds ?? 0 }}</div>
-            <div class="stat-label">音频时长（秒）</div>
+            <div class="stat-value">{{ usage?.cost_points ?? 0 }}</div>
+            <div class="stat-label">累计消耗（点）</div>
           </div>
         </el-card>
       </el-col>
@@ -243,7 +243,7 @@ onMounted(() => {
         <el-card shadow="hover" class="stat-card">
           <div class="stat-icon project"><el-icon><Folder /></el-icon></div>
           <div class="stat-info">
-            <div class="stat-value">{{ usage?.projects_count ?? 0 }}</div>
+            <div class="stat-value">{{ usage?.project_count ?? 0 }}</div>
             <div class="stat-label">项目数量</div>
           </div>
         </el-card>

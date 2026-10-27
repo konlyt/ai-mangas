@@ -14,14 +14,14 @@ import httpx
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.providers.video.base import VideoProvider
+from app.providers.video.base import VideoProvider, VideoRetryableError
 from app.providers.video.mock import MockVideoProvider
 
 logger = get_logger()
 
 
-class ZhipuVideoRetryableError(RuntimeError):
-    """智谱视频可重试错误（限流/超时/5xx）。"""
+class ZhipuVideoRetryableError(VideoRetryableError):
+    """智谱视频可重试错误（限流/超时/5xx），继承跨厂商统一基类。"""
 
 
 class ZhipuVideoProvider(VideoProvider):
@@ -49,7 +49,7 @@ class ZhipuVideoProvider(VideoProvider):
         """初始化智谱视频 Provider，从全局配置读取凭证。"""
         self._api_base = (settings.ZHIPU_VIDEO_BASE_URL or "https://open.bigmodel.cn/api/paas/v4").rstrip("/")
         self._api_key = settings.ZHIPU_VIDEO_API_KEY or ""
-        self._model = settings.ZHIPU_VIDEO_MODEL or "cogvideox-3"
+        self._model = settings.ZHIPU_VIDEO_MODEL or "cogvideox-flash"
         self._mock = MockVideoProvider()
         self._degraded_tasks: set[str] = set()
         self.last_degraded: bool = False

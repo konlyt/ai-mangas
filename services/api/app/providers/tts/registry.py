@@ -32,7 +32,7 @@ class TTSProviderRegistry:
             None
         """
         self._providers: dict[str, TTSProvider] = {}
-        # 默认使用通义千问 TTS（DashScope qwen3-tts-instruct-flash）
+        # 默认使用通义千问 qwen3-tts-flash（已实测可用），失败自动降级 mock
         self._default: str = "qianwen"
         self.register("mock", MockTTSProvider())
         self.register("agnes", AgnesTTSProvider())

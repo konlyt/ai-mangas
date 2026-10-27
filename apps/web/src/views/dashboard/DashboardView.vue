@@ -10,7 +10,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
-import type { Project, ProjectStats } from '@/types'
+import type { Project, ProjectStats, UserQuota, UserUsage } from '@/types'
 import { listProjects, deleteProject, recentProjects, projectStats, updateProject } from '@/api/projects'
 import { getUsage, getQuota } from '@/api/users'
 import { useUserStore } from '@/stores/user'
@@ -26,12 +26,24 @@ const projectStore = useProjectStore()
 const projects = ref<Project[]>([])
 /** 最近编辑项目（置顶 3 个） */
 const recentList = ref<Project[]>([])
-/** 项目统计 */
-const stats = ref<ProjectStats>({ total: 0, in_progress: 0, completed: 0 })
-/** 使用量统计 */
-const usage = ref({ images_count: 0, video_seconds: 0, projects_count: 0 })
-/** 配额信息 */
-const quota = ref({ credits: 0 })
+/** 项目统计（对齐后端 ProjectStatsOut） */
+const stats = ref<ProjectStats>({
+  today_projects: 0,
+  month_projects: 0,
+  image_count: 0,
+  video_duration: 0,
+  cost_points: 0,
+})
+/** 使用量统计（对齐后端 UsageOut） */
+const usage = ref<UserUsage>({
+  project_count: 0,
+  image_count: 0,
+  video_duration: 0,
+  cost_points: 0,
+  daily: [],
+})
+/** 配额信息（对齐后端 QuotaOut） */
+const quota = ref<UserQuota>({ quota: 0, vip_level: 0 })
 
 /** 列表加载状态 */
 const loading = ref(false)
@@ -78,8 +90,8 @@ const filteredProjects = computed<Project[]>(() => {
     const kw = keyword.value.toLowerCase()
     list = list.filter(
       (p) =>
-        p.name.toLowerCase().includes(kw) ||
-        (p.description || '').toLowerCase().includes(kw),
+        p.title.toLowerCase().includes(kw) ||
+        (p.genre || '').toLowerCase().includes(kw),
     )
   }
   if (statusFilter.value) {
@@ -94,7 +106,7 @@ const filteredProjects = computed<Project[]>(() => {
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
     )
   } else {
-    list.sort((a, b) => a.name.localeCompare(b.name))
+    list.sort((a, b) => a.title.localeCompare(b.title))
   }
   return list
 })

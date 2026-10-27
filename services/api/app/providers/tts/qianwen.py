@@ -1,9 +1,13 @@
 """
-通义千问（Qianwen / DashScope）TTS Provider。
+通义千问（Qwen-TTS / DashScope）语音合成 Provider。
 
-调用阿里云 DashScope 的多模态生成接口实现语音合成，
-模型为 qwen3-tts-instruct-flash。
+调用阿里云百炼 qwen3-tts-flash 非实时语音合成接口：
+    POST {base}/api/v1/services/aigc/multimodal-generation/generation
+请求体：{"model": "qwen3-tts-flash", "input": {"text": ..., "voice": ..., "language_type": "Chinese"}}
+响应：output.audio.url（OSS wav 链接）或 output.audio.data（base64）。
 """
+
+import base64
 
 import httpx
 
@@ -15,20 +19,20 @@ from app.providers.tts.mock import MockTTSProvider
 
 logger = get_logger()
 
+# qwen3-tts-flash 默认音色（实测可用，女声）
+DEFAULT_QIANWEN_VOICE = "Cherry"
+
 
 class QianwenTTSProvider(TTSProvider):
-    """通义千问 TTS Provider。
-
-    通过 DashScope 多模态生成接口调用 qwen3-tts-instruct-flash 模型，
-    将文本合成为语音并返回音频文件 URL。
+    """通义千问 qwen3-tts-flash 语音合成 Provider。
 
     Attributes:
-        _api_base: DashScope 基础地址。
+        _api_base: DashScope 基础地址（不含 path）。
         _api_key: DashScope API Key。
-        _model: TTS 模型名。
+        _model: 模型名。
         _api_path: 接口路径。
         _timeout_ms: 请求超时（毫秒）。
-        _max_retries: 最大重试次数。
+        _allow_demo_fallback: 失败时是否允许降级 mock。
         _mock: 内部持有的 Mock Provider，用于降级。
         last_degraded: 最近一次 synthesize 是否发生了降级。
     """
@@ -37,10 +41,9 @@ class QianwenTTSProvider(TTSProvider):
         """初始化通义千问 TTS Provider，从全局配置读取凭证。"""
         self._api_base = (settings.QIANWEN_TTS_API_BASE_URL or "https://dashscope.aliyuncs.com").rstrip("/")
         self._api_key = settings.QIANWEN_TTS_API_KEY or ""
-        self._model = settings.QIANWEN_TTS_MODEL or "qwen3-tts-instruct-flash"
+        self._model = settings.QIANWEN_TTS_MODEL or "qwen3-tts-flash"
         self._api_path = settings.QIANWEN_TTS_API_PATH or "/api/v1/services/aigc/multimodal-generation/generation"
-        self._timeout_ms = settings.QIANWEN_TTS_TIMEOUT_MS or 120000
-        self._max_retries = settings.QIANWEN_TTS_MAX_RETRIES or 0
+        self._timeout_ms = (settings.QIANWEN_TTS_TIMEOUT_MS or 120000) / 1000
         self._allow_demo_fallback = settings.QIANWEN_TTS_ALLOW_DEMO_FALLBACK
         self._mock = MockTTSProvider()
         self.last_degraded: bool = False
@@ -54,17 +57,16 @@ class QianwenTTSProvider(TTSProvider):
         """将文本合成为语音并返回音频 URL。
 
         Args:
-            text: 待合成的文本内容。
-            voice_id: 音色 ID（通义千问默认使用 longxiaochun 等音色名）。
-            params: 额外参数（speed/volume 等）。
+            text: 待合成文本。
+            voice_id: 音色 ID（如 Cherry / Ethan / Mia）。
+            params: 额外参数（speed 等，预留）。
 
         Returns:
-            str: 合成音频的访问 URL。
+            str: 合成音频的 /static/audio/... 访问 URL。
 
         Raises:
             RuntimeError: 真实合成失败且不允许降级时抛出。
         """
-        # 未配置 API Key 时直接走 mock
         if not self._api_base or not self._api_key:
             logger.warning("[qianwen-tts] 未配置 QIANWEN_TTS_API_KEY，降级 mock。")
             self.last_degraded = True
@@ -85,12 +87,12 @@ class QianwenTTSProvider(TTSProvider):
         voice_id: str,
         params: dict | None,
     ) -> str:
-        """调用 DashScope 多模态生成接口完成 TTS 合成。
+        """调用 DashScope qwen3-tts-flash 接口完成 TTS 合成。
 
         Args:
             text: 待合成文本。
             voice_id: 音色 ID。
-            params: 额外参数。
+            params: 额外参数（预留）。
 
         Returns:
             str: 音频落盘后的 /static/audio/... 访问 URL。
@@ -98,36 +100,20 @@ class QianwenTTSProvider(TTSProvider):
         Raises:
             RuntimeError: API 返回非 200 或解析响应失败时抛出。
         """
-        p = params or {}
-        url = f"{self._api_base}{self._api_path}"
-
-        # 通义千问 qwen3-tts 请求体格式
-        voice = voice_id or "longxiaochun"
+        speed = (params or {}).get("speed", 1.0)
         body = {
             "model": self._model,
             "input": {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"text": text},
-                            {"type": "voice", "voice": voice},
-                        ],
-                    }
-                ]
-            },
-            "parameters": {
-                "result_format": "mp3",
+                "text": text,
+                "voice": voice_id or DEFAULT_QIANWEN_VOICE,
+                "language_type": "Chinese",
+                "speed": speed,
             },
         }
 
-        # 可选参数：语速
-        if "speed" in p:
-            body["parameters"]["speed"] = p["speed"]
-
-        async with httpx.AsyncClient(timeout=self._timeout_ms / 1000) as client:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
             resp = await client.post(
-                url,
+                f"{self._api_base}{self._api_path}",
                 headers={
                     "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
@@ -139,39 +125,19 @@ class QianwenTTSProvider(TTSProvider):
             raise RuntimeError(f"通义千问 TTS API 返回 {resp.status_code}: {resp.text[:300]}")
 
         data = resp.json()
+        audio = (data.get("output") or {}).get("audio") or {}
+        audio_url = audio.get("url")
+        audio_b64 = audio.get("data")
 
-        # 解析响应：从 output 中提取音频 URL 或 base64
-        output = data.get("output", {})
-        choices = output.get("choices", [])
-
-        if not choices:
-            raise RuntimeError("通义千问 TTS 返回空 choices")
-
-        message = choices[0].get("message", {})
-        content = message.get("content", [])
-
-        # 查找音频类型的内容
-        audio_url = None
-        audio_base64 = None
-        for item in content:
-            if isinstance(item, dict):
-                if item.get("type") == "audio_url" and item.get("audio_url", {}).get("url"):
-                    audio_url = item["audio_url"]["url"]
-                elif item.get("type") == "audio" and item.get("audio"):
-                    audio_base64 = item["audio"]
-
-        if audio_base64:
-            # base64 音频：解码后落盘
-            import base64
-            audio_bytes = base64.b64decode(audio_base64)
-            return save_artifact(audio_bytes, "audio", "mp3")
+        if audio_b64:
+            audio_bytes = base64.b64decode(audio_b64)
+            return save_artifact(audio_bytes, "audio", "wav")
 
         if audio_url:
-            # 远端音频 URL：下载后落盘
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
                 audio_resp = await client.get(audio_url)
             if audio_resp.status_code == 200 and audio_resp.content:
-                return save_artifact(audio_resp.content, "audio", "mp3")
+                return save_artifact(audio_resp.content, "audio", "wav")
             raise RuntimeError(f"下载通义千问音频失败: {audio_resp.status_code}")
 
         raise RuntimeError("通义千问 TTS 响应中未找到音频数据")

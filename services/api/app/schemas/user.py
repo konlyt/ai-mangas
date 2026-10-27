@@ -7,7 +7,7 @@
 from datetime import date
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class UserOut(BaseModel):
@@ -33,10 +33,8 @@ class UserOut(BaseModel):
     quota: int
     status: int
 
-    class Config:
-        """Pydantic 配置：允许从 ORM 对象读取属性。"""
-
-        from_attributes = True
+    # Pydantic v2 配置：允许从 ORM 对象读取属性
+    model_config = ConfigDict(from_attributes=True)
 
 
 class QuotaOut(BaseModel):

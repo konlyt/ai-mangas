@@ -12,30 +12,36 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { StoryboardShot } from '@/types'
 import { compose, partialCompose, getOutput, type ComposeOutput } from '@/api/compose'
-import { getStoryboard } from '@/api/storyboard'
 import { getTask } from '@/api/tasks'
+import { useComposeTimeline } from '@/composables/useComposeTimeline'
 import StageStepper from '@/components/StageStepper.vue'
-
-/** 带媒体字段的分镜（后端返回含 id/video_url，前端类型未覆盖，此处扩展） */
-type ShotWithMedia = StoryboardShot & { id: number; video_url?: string | null }
 
 const route = useRoute()
 const router = useRouter()
 const projectId = computed(() => route.params.id as string)
 
-/** 加载状态 */
-const loading = ref(false)
+/** 时间轴核心逻辑（分镜加载 / 多轨块构建 / 缩放拖拽，组合式函数封装） */
+const {
+  loading,
+  scale,
+  videoBlocks,
+  voiceBlocks,
+  bgmBlocks,
+  subtitleBlocks,
+  partialCandidates,
+  totalDuration,
+  rulerMarks,
+  fetchShots,
+  zoomScale,
+  moveBlock,
+} = useComposeTimeline(projectId)
+
 /** 合成中状态 */
 const composing = ref(false)
 /** 合成进度 */
 const composeProgress = ref(0)
 
-/** 分镜列表 */
-const shots = ref<ShotWithMedia[]>([])
-/** 标尺缩放比例 */
-const scale = ref(1)
 /** 当前播放时间（秒） */
 const currentTime = ref(0)
 
@@ -47,15 +53,6 @@ const partialDialogVisible = ref(false)
 /** 局部合成已选分镜 ID */
 const partialSelection = ref<number[]>([])
 
-/** 时间轴上的视频块 */
-const videoBlocks = ref<Array<{ id: number; seq: number; start: number; width: number; color: string }>>([])
-/** 音频块（配音） */
-const voiceBlocks = ref<Array<{ id: number; start: number; width: number; color: string }>>([])
-/** BGM 块 */
-const bgmBlocks = ref<Array<{ id: number; start: number; width: number; color: string }>>([])
-/** 字幕块 */
-const subtitleBlocks = ref<Array<{ id: number; start: number; width: number; text: string }>>([])
-
 /** 转场类型 */
 const transitionType = ref<'none' | 'fade' | 'dissolve' | 'black'>('none')
 const transitionOptions = [
@@ -65,94 +62,13 @@ const transitionOptions = [
   { label: '闪黑', value: 'black' },
 ]
 
-/**
- * 已生成视频片段的分镜（可参与局部合成）
- */
-const partialCandidates = computed(() => shots.value.filter((s) => s.video_url))
-
-/**
- * 时间轴总时长（秒）
- */
-const totalDuration = computed(() => Math.max(1, shots.value.length * 3))
-
-/**
- * 标尺刻度
- */
-const rulerMarks = computed(() => {
-  const marks: number[] = []
-  const step = scale.value >= 2 ? 1 : scale.value >= 1 ? 2 : 5
-  for (let t = 0; t <= totalDuration.value; t += step) {
-    marks.push(t)
-  }
-  return marks
-})
-
-/**
- * 颜色调色板
- */
-const colorPalette = ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399', '#9c27b0']
-
-/**
- * 获取分镜数据并初始化时间轴块
- */
-async function fetchShots(): Promise<void> {
-  loading.value = true
-  try {
-    const data = await getStoryboard(projectId.value)
-    shots.value = (data.shots ?? []) as ShotWithMedia[]
-    // 初始化视频块
-    videoBlocks.value = data.shots.map((s, i) => ({
-      id: i + 1,
-      seq: s.seq,
-      start: i * 3,
-      width: 3,
-      color: colorPalette[i % colorPalette.length],
-    }))
-    // 初始化配音块
-    voiceBlocks.value = data.shots
-      .filter((s) => s.dialogue)
-      .map((s, i) => ({
-        id: i + 1,
-        start: (s.seq - 1) * 3,
-        width: 2,
-        color: '#67c23a',
-      }))
-    // BGM 块
-    bgmBlocks.value = [
-      { id: 1, start: 0, width: totalDuration.value, color: '#e6a23c' },
-    ]
-    // 字幕块
-    subtitleBlocks.value = data.shots
-      .filter((s) => s.dialogue)
-      .map((s, i) => ({
-        id: i + 1,
-        start: (s.seq - 1) * 3,
-        width: 2.5,
-        text: (s.dialogue || '').slice(0, 10) + '...',
-      }))
-  } catch (e) {
-    ElMessage.error('获取分镜数据失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-/**
- * 缩放标尺
- * @param delta - 缩放变化量
- */
-function zoomScale(delta: number): void {
-  scale.value = Math.max(0.5, Math.min(4, scale.value + delta))
-}
-
-/**
- * 拖拽块（简化实现，仅更新位置）
- * @param block - 块对象
- * @param newStart - 新起始时间
- */
-function moveBlock(block: { start: number }, newStart: number): void {
-  block.start = Math.max(0, Math.min(totalDuration.value, newStart))
-}
+/** 后期音频来源模式 */
+const audioMode = ref<'auto' | 'keep_original' | 'tts'>('auto')
+const audioModeOptions = [
+  { label: '自动（推荐）', value: 'auto', tip: '有配音的镜头用配音，其余保留原视频原声' },
+  { label: '保留原声', value: 'keep_original', tip: '全部使用原视频声音，不重新配音' },
+  { label: '全部配音', value: 'tts', tip: '全部使用 TTS 配音（无配音的镜头回退原声）' },
+]
 
 /**
  * 轮询合成任务状态直到结束，期间推进进度条
@@ -197,6 +113,7 @@ async function handleCompose(): Promise<void> {
     const { task_id } = await compose(projectId.value, {
       resolution: '1080p',
       format: 'mp4',
+      audio_mode: audioMode.value,
     })
     await pollComposeTask(task_id)
   } catch (e) {
@@ -259,6 +176,7 @@ function goReviewStage(): void {
 
 onMounted(() => {
   fetchShots()
+  handleGetOutput()
 })
 </script>
 
@@ -306,6 +224,25 @@ onMounted(() => {
             {{ t.label }}
           </el-radio-button>
         </el-radio-group>
+      </div>
+    </el-card>
+
+    <!-- 音频来源面板 -->
+    <el-card class="transition-card" shadow="never">
+      <div class="transition-row">
+        <span class="label">音频来源：</span>
+        <el-radio-group v-model="audioMode" size="small">
+          <el-radio-button
+            v-for="m in audioModeOptions"
+            :key="m.value"
+            :label="m.value"
+          >
+            {{ m.label }}
+          </el-radio-button>
+        </el-radio-group>
+        <span class="audio-tip">
+          {{ audioModeOptions.find((m) => m.value === audioMode)?.tip }}
+        </span>
       </div>
     </el-card>
 
@@ -431,7 +368,7 @@ onMounted(() => {
             :value="s.id"
             class="partial-item"
           >
-            #{{ s.seq }} {{ s.description || s.dialogue || '无描述' }}
+            #{{ s.sequence }} {{ s.dialogue || '无描述' }}
           </el-checkbox>
         </div>
       </el-checkbox-group>
@@ -445,7 +382,7 @@ onMounted(() => {
     <div class="compose-bar">
       <el-button type="primary" size="large" :loading="composing" @click="handleCompose">
         <el-icon><VideoPlay /></el-icon>
-        开始合成
+        {{ output ? '重新合成' : '开始合成' }}
       </el-button>
       <el-button @click="handlePartialCompose">局部预览</el-button>
       <el-progress
@@ -522,6 +459,12 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.audio-tip {
+  font-size: 12px;
+  color: var(--ai-text-secondary);
+  margin-left: 8px;
 }
 
 .label {

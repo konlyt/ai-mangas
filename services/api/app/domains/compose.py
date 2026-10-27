@@ -132,6 +132,15 @@ async def compose(
     if project is None:
         raise BizException(code=ErrorCode.NOT_FOUND, message="项目不存在")
 
+    # 记录本次合成的音频模式到项目配置，供 compose worker 读取
+    audio_mode = (req.audio_mode if req else None) or "auto"
+    if audio_mode not in ("auto", "keep_original", "tts"):
+        audio_mode = "auto"
+    config = dict(project.config or {})
+    config["audio_mode"] = audio_mode
+    project.config = config
+    await db.commit()
+
     idem_key = _make_compose_idempotency_key(project_id)
     existing = await db.execute(
         select(Task).where(Task.idempotency_key == idem_key)
@@ -152,10 +161,11 @@ async def compose(
         await db.refresh(task)
         await _enqueue_compose_task(task.id, req.storyboard_ids if req else None)
     else:
-        # 幂等命中：若任务已结束（失败/死亡）则重置为排队状态并重新入队
-        if task.status in (TaskStatus.FAILED, TaskStatus.DEAD):
+        # 幂等命中：任务已结束（失败/死亡/完成）则重置为排队状态并重新入队
+        if task.status in (TaskStatus.FAILED, TaskStatus.DEAD, TaskStatus.DONE, TaskStatus.SUCCESS):
             task.status = TaskStatus.QUEUED
             task.error_message = None
+            task.result_url = None
             await db.commit()
             await _enqueue_compose_task(task.id, req.storyboard_ids if req else None)
 

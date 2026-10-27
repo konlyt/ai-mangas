@@ -8,6 +8,20 @@
     将比对结果写入 state.consistency，
     并以独立数据库会话落库 consistency_reports 与 asset_variants.feature_vector。
 
+多角色逐角色校验与 check_mode（方案 A5/A6）：
+    关键帧校验不再以"首个带定妆照的角色"作全局参照，而是按分镜关联角色
+    （resolve_storyboard_characters）逐角色比对，每个角色一条报告：
+        - ref_lock     ：角色参考板（ref_board_url）在关键帧生成时真实注入且
+                         未被 Provider 丢弃（读取分镜 ref_count/ref_dropped/
+                         ref_character_names 标记）——参考板本身即锁定机制，
+                         得分仅作质检参考，低于阈值不自动重生成（action=manual）；
+        - feature_card ：参考图未生效/未注入，用特征卡/定妆照（main_asset_url 等）
+                         作参照比对，保留既有阈值重生成逻辑；
+        - quality_gate ：无任何可用参照，仅做关键帧存在性等基础质检。
+    check_mode 随报告写入 state.consistency.reports，并真实落库
+    ConsistencyReport.check_mode 列（历史行由迁移 b3f7a2c94d15 回填为
+    quality_gate）。
+
 输入（来自 state）：
     - characters: 角色列表（含 name / description / image_url / feature_tags）。
     - scenes: 场景列表。
@@ -163,6 +177,101 @@ def build_consistent_prompt(base_prompt: str, feature_tags: dict) -> str:
     return f"{base_prompt}，{suffix}"
 
 
+def build_feature_card_text(char: dict) -> str:
+    """构造角色特征卡文本段（无参考板角色的一致性约束兜底，方案 A5）。
+
+    数据合并优先级：character_locks（不可变锚点）覆盖 feature_tags；
+    仅保留 FEATURE_TAG_KEYS 白名单内的非空字段，按
+    "{name}：外貌：…；服饰：…；发型：…；体型：…；画风：…" 格式输出。
+
+    Args:
+        char: 角色字典（含 name / character_locks / feature_tags）。
+
+    Returns:
+        str: 特征卡文本；无任何有效特征字段时仅返回角色名。
+    """
+    name = str(char.get("name", "")).strip() or "未命名角色"
+    merged: dict = {}
+
+    # 先并入 feature_tags（含 style_tag 画风标签）
+    feature_tags = char.get("feature_tags")
+    if isinstance(feature_tags, dict):
+        for key in FEATURE_TAG_KEYS:
+            value = feature_tags.get(key)
+            if isinstance(value, str) and value.strip():
+                merged[key] = value.strip()
+
+    # 再并入 character_locks（不可变锚点优先级更高，覆盖同名 feature_tags 字段）
+    locks = char.get("character_locks")
+    if isinstance(locks, dict):
+        for key in FEATURE_TAG_KEYS:
+            value = locks.get(key)
+            if value is not None and str(value).strip():
+                merged[key] = str(value).strip()
+
+    parts = [
+        f"{_FEATURE_TAG_LABELS[key]}：{merged[key]}"
+        for key in FEATURE_TAG_KEYS
+        if key in merged
+    ]
+    if not parts:
+        return name
+    return f"{name}：{'；'.join(parts)}"
+
+
+def resolve_storyboard_characters(sb: dict, characters: list[dict]) -> list[dict]:
+    """解析分镜关联的角色列表（storyboard→characters 关联，方案 A5）。
+
+    关联方式（按优先级）：
+        1. sb["character_ids"]（Storyboard 表 character_ids JSON 列的 state
+           形态）：按角色字典的 "id" 字段匹配（str/int 容错）；
+        2. sb["character_names"]（字符串列表）：按角色名匹配；
+        3. 均缺失：视为"全角色分镜"——storyboard_agent 生成的分镜提示词
+           本身拼入全部角色名，语义上每个分镜涉及全部角色。
+
+    Args:
+        sb: 分镜字典（state.storyboards 中的一项）。
+        characters: state.characters 角色列表。
+
+    Returns:
+        list[dict]: 关联角色列表。显式关联（方式 1/2）存在但匹配结果为空时
+            返回空列表（调用方回退旧逻辑）；无显式关联字段时返回全部角色的浅拷贝。
+    """
+    sb_ids = sb.get("character_ids")
+    if isinstance(sb_ids, (list, tuple)):
+        if not sb_ids:
+            return []
+        wanted_ids: set[int] = set()
+        for raw in sb_ids:
+            try:
+                wanted_ids.add(int(raw))
+            except (TypeError, ValueError):
+                continue
+        linked: list[dict] = []
+        for char in characters:
+            char_id = char.get("id")
+            if char_id is None:
+                continue
+            try:
+                if int(char_id) in wanted_ids:
+                    linked.append(char)
+            except (TypeError, ValueError):
+                continue
+        return linked
+
+    sb_names = sb.get("character_names")
+    if isinstance(sb_names, (list, tuple)):
+        if not sb_names:
+            return []
+        wanted_names = {str(n).strip() for n in sb_names if str(n).strip()}
+        return [
+            char for char in characters
+            if str(char.get("name", "")).strip() in wanted_names
+        ]
+
+    return list(characters)
+
+
 async def extract_feature_tags(character_desc: str, llm: Optional[LLMClient] = None) -> dict:
     """调用文本大模型从角色描述中提取结构化特征标签。
 
@@ -253,7 +362,8 @@ async def _persist_consistency_results(
     """将一致性校验结果落库（内部辅助函数，独立数据库会话）。
 
     写入内容：
-        - consistency_reports：每条带真实得分的报告一行；
+        - consistency_reports：每条带真实得分的报告一行，含真实 check_mode
+          （报告缺失该字段时落 NULL，如资产阶段报告）；
         - asset_variants.feature_vector：资产校验阶段，将角色当前定妆照的
           aHash 64 位 0/1 向量写入该角色最新生成（DONE）的资产变体。
 
@@ -290,6 +400,14 @@ async def _persist_consistency_results(
                     else ConsistencySubjectType.KEYFRAME
                 )
                 action = ConsistencyAction(report.get("action", "pass"))
+                # 真实 check_mode（ref_lock/feature_card/quality_gate），
+                # 报告未携带时（如资产阶段报告）落 NULL
+                raw_check_mode = report.get("check_mode")
+                check_mode = (
+                    str(raw_check_mode).strip() or None
+                    if raw_check_mode is not None
+                    else None
+                )
                 session.add(
                     ConsistencyReport(
                         project_id=project_id,
@@ -299,6 +417,7 @@ async def _persist_consistency_results(
                         similarity_score=score,
                         threshold=SIMILARITY_THRESHOLD,
                         action=action,
+                        check_mode=check_mode,
                     )
                 )
 
@@ -368,8 +487,12 @@ async def consistency_agent_node(state: ProductionState) -> dict:
 
     使用真实图像相似度（aHash + HSV 直方图加权）替换随机数假数据：
         - 资产校验：比对角色参照定妆照与当前生成定妆照；
-        - 关键帧校验：比对主角色定妆照与分镜关键帧；
-        - 综合得分低于 SIMILARITY_THRESHOLD 时判定 regenerate；
+        - 关键帧校验（方案 A5/A6）：按分镜关联角色逐角色比对——
+          参照优先取角色参考板（ref_board_url），其次定妆照（main_asset_url 等），
+          每个角色一条报告并标注 check_mode（ref_lock/feature_card/quality_gate）；
+          分镜无关联角色时回退旧行为（首个带定妆照角色作全局参照）；
+        - 综合得分低于 SIMILARITY_THRESHOLD 时判定 regenerate
+          （ref_lock 模式除外：参考板即锁定机制，低分记 manual 不自动重生成）；
         - 比对无法进行（缺参照图/图像加载失败）时判定 manual 并记录原因。
 
     Args:
@@ -466,33 +589,112 @@ async def consistency_agent_node(state: ProductionState) -> dict:
             candidate_hash=result["candidate_hash"],
         )
 
-    # 校验关键帧：参照 = 首个带定妆照的角色，候选 = 分镜关键帧
-    reference_char = next((c for c in characters if c.get("image_url")), None)
+    # 校验关键帧（方案 A5/A6）：优先按分镜关联角色逐角色比对——
+    # 每个角色的 ref_board_url / main_asset_url 各自与关键帧比对并各出一条
+    # 报告（subject_name="分镜#N·角色名"）；分镜解析不出关联角色时回退旧行为：
+    # 首个带定妆照的角色作全局参照（保持旧字段兼容）。
+    fallback_reference_char = next((c for c in characters if c.get("image_url")), None)
     for sb in storyboards:
-        name = f"分镜#{sb.get('sequence', '')}"
+        board_label = f"分镜#{sb.get('sequence', '')}"
         candidate_url = sb.get("keyframe_url")
 
         if not candidate_url:
-            _build_report("keyframe", name, None, "manual", error="缺少关键帧图像，无法比对")
-            continue
-        if reference_char is None:
-            _build_report("keyframe", name, None, "pass", note="无角色定妆照可作参照，跳过相似度计算")
-            continue
-
-        try:
-            result = await check_consistency(reference_char.get("image_url"), candidate_url)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[consistency_agent] {name} 关键帧比对失败: {exc}")
-            _build_report("keyframe", name, None, "manual", error=f"图像比对失败: {exc}")
+            _build_report(
+                "keyframe", board_label, None, "manual",
+                error="缺少关键帧图像，无法比对", check_mode="quality_gate",
+            )
             continue
 
-        score = result["score"]
-        action = "pass" if score >= SIMILARITY_THRESHOLD else "regenerate"
-        _build_report(
-            "keyframe", name, score, action,
-            hash_similarity=result["hash_similarity"],
-            histogram_similarity=result["histogram_similarity"],
-        )
+        linked_chars = resolve_storyboard_characters(sb, characters)
+        if not linked_chars:
+            # 回退旧逻辑：全局单参照比对（check_mode=feature_card）
+            if fallback_reference_char is None:
+                _build_report(
+                    "keyframe", board_label, None, "pass",
+                    note="无角色定妆照可作参照，跳过相似度计算", check_mode="quality_gate",
+                )
+                continue
+            try:
+                result = await check_consistency(fallback_reference_char.get("image_url"), candidate_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[consistency_agent] {board_label} 关键帧比对失败: {exc}")
+                _build_report(
+                    "keyframe", board_label, None, "manual",
+                    error=f"图像比对失败: {exc}", check_mode="feature_card",
+                )
+                continue
+            score = result["score"]
+            action = "pass" if score >= SIMILARITY_THRESHOLD else "regenerate"
+            _build_report(
+                "keyframe", board_label, score, action,
+                hash_similarity=result["hash_similarity"],
+                histogram_similarity=result["histogram_similarity"],
+                check_mode="feature_card",
+            )
+            continue
+
+        # 逐角色比对：读取 keyframe_agent 写入分镜的参考图消费标记
+        ref_count = int(sb.get("ref_count") or 0)
+        ref_dropped = bool(sb.get("ref_dropped"))
+        # 关键判定：Provider 真实消费了参考图（有参考图注入且未被降级丢弃）
+        refs_consumed = ref_count > 0 and not ref_dropped
+        ref_names = set(sb.get("ref_character_names") or [])
+        multi = len(linked_chars) > 1
+
+        for char in linked_chars:
+            char_name = str(char.get("name", "")).strip() or "未命名角色"
+            subject_label = f"{board_label}·{char_name}" if multi else board_label
+            ref_board_url = str(char.get("ref_board_url") or "").strip()
+            # 参照优先级：参考板 > 主定妆照 > 当前定妆照 > 参照定妆照
+            reference_url = (
+                ref_board_url
+                or char.get("main_asset_url")
+                or char.get("image_url")
+                or char.get("reference_image_url")
+            )
+
+            # A6 check_mode 判定：
+            #   ref_lock     - 角色参考板在生成时真实注入且未被 Provider 丢弃；
+            #   feature_card - 参考图未生效/未注入，用特征卡/定妆照作参照比对；
+            #   quality_gate - 无任何可用参照，仅做基础质检。
+            is_ref_lock = bool(ref_board_url) and char_name in ref_names and refs_consumed
+            check_mode = "ref_lock" if is_ref_lock else ("feature_card" if reference_url else "quality_gate")
+
+            if check_mode == "quality_gate":
+                _build_report(
+                    "keyframe", subject_label, None, "pass",
+                    note=f"角色 {char_name} 无可用参照图，仅做基础质检", check_mode=check_mode,
+                )
+                continue
+
+            try:
+                result = await check_consistency(reference_url, candidate_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[consistency_agent] {subject_label} 关键帧比对失败（{check_mode}）: {exc}")
+                _build_report(
+                    "keyframe", subject_label, None, "manual",
+                    error=f"图像比对失败: {exc}", check_mode=check_mode,
+                )
+                continue
+
+            score = result["score"]
+            extra: dict = {
+                "hash_similarity": result["hash_similarity"],
+                "histogram_similarity": result["histogram_similarity"],
+                "check_mode": check_mode,
+            }
+            if check_mode == "ref_lock":
+                # 关键降级语义（A6）：ref_lock 模式下参考板参考图已在生成时真实注入，
+                # 参考板本身就是一致性锁定机制，比对得分仅作质检参考；
+                # 低于阈值时记为 manual 提示人工关注，但【不自动重生成】——
+                # 重生成由用户手动触发，避免自动流程推翻已锁定的一致性基准。
+                action = "pass" if score >= SIMILARITY_THRESHOLD else "manual"
+                if action == "manual":
+                    extra["note"] = "参考图锁定模式：得分低于阈值仅记录，不自动重生成，如需重生成请手动触发"
+            else:
+                # feature_card 模式：保留既有阈值重生成逻辑
+                action = "pass" if score >= SIMILARITY_THRESHOLD else "regenerate"
+            _build_report("keyframe", subject_label, score, action, **extra)
 
     # 汇总：低于阈值（action == regenerate）即要求重新生成
     need_regenerate = any(r["action"] == "regenerate" for r in reports)

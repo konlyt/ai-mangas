@@ -12,11 +12,9 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { Character } from '@/types'
-import { getCharacters } from '@/api/assets'
-import { getStoryboard } from '@/api/storyboard'
-import { generateVoices, getTtsVoices, type TtsVoice } from '@/api/generate'
+import { useVoiceStudio } from '@/composables/useVoiceStudio'
 import StageStepper from '@/components/StageStepper.vue'
+import { saveSubtitleSelection } from '@/api/generate'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,43 +23,43 @@ const projectId = computed(() => route.params.id as string)
 /** 当前激活的 Tab */
 const activeTab = ref('voice')
 
-/** 加载状态 */
-const loading = ref(false)
-/** 生成中状态 */
-const generating = ref(false)
-
-/** 角色列表 */
-const characters = ref<Character[]>([])
-/**
- * 音色库（VO-02：从 GET /tts/voices 拉取，覆盖 mock/agnes 可用音色）
- */
-const voiceLibrary = ref<TtsVoice[]>([])
-/** 批量生成时使用的默认音色 ID（VO-03：提交配音任务时透传给后端） */
-const selectedVoiceId = ref<string>('')
-
-/** 角色音色绑定映射 */
-const voiceMapping = reactive<Record<string, string>>({})
-
-/** 对白列表 */
-const dialogues = ref<Array<{
-  seq: number
-  character: string
-  text: string
-  audioUrl?: string
-  /** 音频时长（秒，后端 TTS 完成后写入分镜 duration） */
-  duration?: number
-  speed: number
-  pitch: number
-  status: 'pending' | 'generating' | 'done' | 'failed'
-}>>([])
+/** 配音核心逻辑（音色库 / 角色绑定 / 对白生成，组合式函数封装） */
+const {
+  loading,
+  generating,
+  characters,
+  voiceLibrary,
+  selectedVoiceId,
+  voiceMapping,
+  dialogues,
+  allBound,
+  fetchVoices,
+  fetchData,
+  previewVoice,
+  bindVoice,
+  handleBatchGenerate,
+  handleRegenerate,
+  toggleSubtitle,
+} = useVoiceStudio(projectId)
 
 /** BGM 推荐列表 */
 const bgmList = ref([
-  { id: 'b1', name: '温馨日常', url: '', selected: false },
-  { id: 'b2', name: '紧张悬疑', url: '', selected: false },
-  { id: 'b3', name: '激昂热血', url: '', selected: false },
-  { id: 'b4', name: '伤感抒情', url: '', selected: false },
+  { id: 'b1', name: '温馨日常', url: '/static/bgm/warm.mp3', selected: false },
+  { id: 'b2', name: '紧张悬疑', url: '/static/bgm/tense.mp3', selected: false },
+  { id: 'b3', name: '激昂热血', url: '/static/bgm/epic.mp3', selected: false },
+  { id: 'b4', name: '伤感抒情', url: '/static/bgm/sad.mp3', selected: false },
 ])
+
+let bgmAudio: HTMLAudioElement | null = null
+function previewBgm(bgm: { name: string; url: string }): void {
+  if (!bgm.url) {
+    ElMessage.warning(`「${bgm.name}」暂无音频，请上传自定义 BGM`)
+    return
+  }
+  if (bgmAudio) { bgmAudio.pause(); bgmAudio = null }
+  bgmAudio = new Audio(bgm.url)
+  bgmAudio.play().catch(() => ElMessage.warning('浏览器阻止了自动播放'))
+}
 
 /** 字幕样式 */
 const subtitleStyle = reactive({
@@ -75,136 +73,6 @@ const subtitleStyle = reactive({
 })
 
 /**
- * 是否所有角色都已绑定音色
- */
-const allBound = computed(
-  () => characters.value.length > 0 && characters.value.every((c) => voiceMapping[c.id]),
-)
-
-/**
- * 获取音色库（VO-02）：从 /tts/voices 拉取，失败时回退 mock 默认音色
- */
-async function fetchVoices(): Promise<void> {
-  try {
-    voiceLibrary.value = await getTtsVoices()
-  } catch (e) {
-    // 接口异常时保留最小兜底，保证音色下拉可用
-    voiceLibrary.value = [
-      { voice_id: 'default', name: '默认音色', gender: 'neutral', style: '占位', provider: 'mock' },
-    ]
-  }
-  // 默认选中第一个音色，便于直接批量生成
-  if (!selectedVoiceId.value && voiceLibrary.value.length > 0) {
-    selectedVoiceId.value = voiceLibrary.value[0].voice_id
-  }
-}
-
-/**
- * 获取角色与分镜对白（兼容后端返回数组或 { shots } 包装两种结构）
- */
-async function fetchData(): Promise<void> {
-  loading.value = true
-  try {
-    const chars = await getCharacters(projectId.value)
-    characters.value = chars
-    const sb = await getStoryboard(projectId.value)
-    const shots: any[] = Array.isArray(sb) ? sb : sb?.shots || []
-    dialogues.value = shots
-      .filter((s) => s.dialogue)
-      .map((s, idx) => ({
-        seq: idx + 1,
-        character: '角色' + (idx % chars.length + 1),
-        text: s.dialogue || '',
-        audioUrl: s.audio_url || undefined,
-        duration: s.duration || undefined,
-        speed: 1.0,
-        pitch: 1.0,
-        status: (s.audio_url ? 'done' : 'pending') as 'pending' | 'done',
-      }))
-  } catch (e) {
-    ElMessage.error('获取数据失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-/**
- * 试听音色
- * @param voiceId - 音色 ID
- */
-function previewVoice(voiceId: string): void {
-  const voice = voiceLibrary.value.find((v) => v.voice_id === voiceId)
-  ElMessage.info(`试听音色：${voice?.name || voiceId}`)
-}
-
-/**
- * 绑定角色音色
- * @param characterId - 角色 ID
- * @param voiceId - 音色 ID
- */
-function bindVoice(characterId: string, voiceId: string): void {
-  voiceMapping[characterId] = voiceId
-  ElMessage.success('音色已绑定')
-}
-
-/**
- * 批量生成全部配音（提交时透传所选默认音色，VO-03）
- */
-async function handleBatchGenerate(): Promise<void> {
-  if (!allBound.value) {
-    ElMessage.warning('请先为所有角色绑定音色')
-    return
-  }
-  generating.value = true
-  try {
-    const shots = dialogues.value.map((d) => d.seq)
-    await generateVoices(projectId.value, {
-      shots,
-      voice_id: selectedVoiceId.value || undefined,
-    })
-    // 模拟逐句生成
-    let idx = 0
-    const timer = setInterval(() => {
-      if (idx >= dialogues.value.length) {
-        clearInterval(timer)
-        generating.value = false
-        ElMessage.success('配音生成完成')
-        return
-      }
-      dialogues.value[idx].status = 'generating'
-      setTimeout(() => {
-        dialogues.value[idx].status = 'done'
-      }, 300)
-      idx++
-    }, 400)
-  } catch (e) {
-    generating.value = false
-    ElMessage.error('配音生成失败')
-  }
-}
-
-/**
- * 单句重生成（沿用当前默认音色，VO-03）
- * @param d - 对白对象
- */
-async function handleRegenerate(d: typeof dialogues.value[number]): Promise<void> {
-  d.status = 'generating'
-  try {
-    await generateVoices(projectId.value, {
-      shots: [d.seq],
-      voice_id: selectedVoiceId.value || undefined,
-    })
-    setTimeout(() => {
-      d.status = 'done'
-      ElMessage.success(`第 ${d.seq} 句已重新生成`)
-    }, 800)
-  } catch (e) {
-    d.status = 'failed'
-    ElMessage.error('生成失败')
-  }
-}
-
-/**
  * 选用 BGM
  * @param bgm - BGM 对象
  */
@@ -215,9 +83,15 @@ function selectBgm(bgm: { id: string; selected: boolean }): void {
 }
 
 /**
- * 进入合成阶段
+ * 进入合成阶段：先保存勾选的字幕，再跳转
  */
-function goComposeStage(): void {
+async function goComposeStage(): Promise<void> {
+  try {
+    const texts = dialogues.value.filter((d) => d.useForSubtitle).map((d) => d.text)
+    await saveSubtitleSelection(projectId.value, texts)
+  } catch (e) {
+    console.warn('字幕保存失败，使用默认字幕', e)
+  }
   router.push(`/project/${projectId.value}/compose`)
 }
 
@@ -331,8 +205,9 @@ onMounted(() => {
         <div v-else class="dialogue-list">
           <el-card v-for="d in dialogues" :key="d.seq" class="dialogue-card" shadow="never">
             <div class="dialogue-header">
-              <el-tag size="small">#{{ d.seq }}</el-tag>
+              <el-tag size="small" type="primary">镜头#{{ d.shotSeq }}</el-tag>
               <span class="dialogue-char">{{ d.character }}</span>
+              <el-checkbox v-model="d.useForSubtitle" size="small" @change="toggleSubtitle(d)">字幕</el-checkbox>
               <el-tag v-if="d.duration" size="small" type="info">时长 {{ d.duration }}s</el-tag>
               <el-tag :type="d.status === 'done' ? 'success' : d.status === 'failed' ? 'danger' : d.status === 'generating' ? 'warning' : 'info'" size="small">
                 {{ d.status === 'done' ? '已生成' : d.status === 'failed' ? '失败' : d.status === 'generating' ? '生成中' : '待生成' }}
@@ -370,7 +245,7 @@ onMounted(() => {
               </div>
               <div class="bgm-name">{{ bgm.name }}</div>
               <div class="bgm-actions">
-                <el-button size="small" text @click="previewVoice(bgm.id)">
+                <el-button size="small" text @click="previewBgm(bgm)">
                   <el-icon><VideoPlay /></el-icon>
                   试听
                 </el-button>

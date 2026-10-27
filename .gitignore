@@ -47,3 +47,53 @@ Thumbs.db
 # Temp
 *.tmp
 *.temp
+.pytest_cache/
+pytest-of-*/
+.cleanup_trash/
+
+# Large binaries (ffmpeg / ffprobe, ~200MB total)
+tools/
+*.exe
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime artifacts (media generated at runtime)
+services/api/static/audio/
+services/api/static/videos/
+services/api/static/images/
+services/api/static/outputs/
+services/api/static/subtitles/
+services/api/static/acceptance/
+services/api/static/uploads/
+
+# Temp task dirs & scratch files
+services/api/compose_*/
+services/api/tmp*
+services/api/pytest_*_out.txt
+pytest_out.txt
+tmpxenoa51x
+jwz3hv7o
+
+# Stray scratch files with random names (no extension)
+services/api/0018_nf6
+services/api/0gva52ai
+services/api/24hyeh9s
+services/api/27e2oecj
+services/api/9mv5m3ut
+services/api/g732mqq9
+services/api/kol2nkw2
+services/api/n2hxg8tl
+services/api/ob__5urr
+services/api/q5cacuc8
+services/api/qap2gici
+
+# Editor / assistant local data
+.workbuddy/
+.trae/
+.pnpm-store/
+
+# Local docs (not for remote repo)
+项目开发文档/

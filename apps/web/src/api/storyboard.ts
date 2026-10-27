@@ -5,23 +5,23 @@
  */
 
 import request from './request'
-import type { Storyboard, StoryboardShot } from '@/types'
+import type { Storyboard, StoryboardUpdateParams } from '@/types'
 
 /**
  * 根据剧本与资产生成分镜
  * @param id - 项目 ID
- * @returns 生成的分镜信息
+ * @returns 生成的分镜列表（Storyboard[]）
  */
-export function generateStoryboard(id: string): Promise<Storyboard> {
+export function generateStoryboard(id: string): Promise<Storyboard[]> {
   return request.post(`/projects/${id}/storyboard/generate`)
 }
 
 /**
- * 获取项目分镜
+ * 获取项目分镜列表
  * @param id - 项目 ID
- * @returns 分镜信息
+ * @returns 分镜列表（Storyboard[]）
  */
-export function getStoryboard(id: string): Promise<Storyboard> {
+export function getStoryboard(id: string): Promise<Storyboard[]> {
   return request.get(`/projects/${id}/storyboard`)
 }
 
@@ -29,13 +29,13 @@ export function getStoryboard(id: string): Promise<Storyboard> {
  * 更新单个分镜镜头
  * @param id - 项目 ID
  * @param seq - 镜头序号
- * @param data - 更新参数
+ * @param data - 更新参数（对齐后端 StoryboardUpdateRequest）
  * @returns 更新后的分镜信息
  */
 export function updateStoryboard(
   id: string,
   seq: number,
-  data: Partial<StoryboardShot>,
+  data: StoryboardUpdateParams,
 ): Promise<Storyboard> {
   return request.put(`/projects/${id}/storyboard/${seq}`, data)
 }
@@ -46,7 +46,7 @@ export function updateStoryboard(
  * @param orderedIds - 按新顺序排列的分镜 ID 列表（完整覆盖项目全部分镜）
  * @returns 重排后的分镜列表
  */
-export function reorderStoryboard(id: string, orderedIds: number[]): Promise<unknown> {
+export function reorderStoryboard(id: string, orderedIds: number[]): Promise<Storyboard[]> {
   return request.put(`/projects/${id}/storyboard/reorder`, { ordered_ids: orderedIds })
 }
 

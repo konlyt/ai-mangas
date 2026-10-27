@@ -36,6 +36,9 @@ _ISOLATED_ENV_KEYS: tuple[str, ...] = (
     "AGNES_VIDEO_API_KEY",
     "AGNES_VIDEO_MODEL",
     "AGNES_VIDEO_BASE_URL",
+    "APIMART_BASE_URL",
+    "APIMART_API_KEY",
+    "SEEDREAM_IMAGE_MODEL",
 )
 
 for _key in _ISOLATED_ENV_KEYS:
@@ -106,32 +109,10 @@ def _patch_bigint_primary_keys_for_sqlite() -> None:
                 column.type = Integer()
 
 
-def _dedupe_index_names_for_sqlite() -> None:
-    """为 SQLite 全局唯一化 Base.metadata 中的索引名。
-
-    MySQL 的索引名仅在表内唯一，而 SQLite 的索引名是 schema 级全局唯一；
-    业务模型中多张表复用了相同索引名（idx_project_id / idx_status /
-    idx_project_time），在 SQLite 建表时会产生
-    "index already exists" 错误。此处为重名索引附加表名前缀，
-    仅作用于测试进程内的元数据，不修改任何业务代码。
-
-    Returns:
-        None
-    """
-    seen: set[str] = set()
-    for table in Base.metadata.sorted_tables:
-        for index in table.indexes:
-            if index.name in seen:
-                # 附加表名前缀保证全局唯一（Index.name 为可写实例属性，
-                # 建表 DDL 在 create_all 时才生成，改名即时生效）
-                index.name = f"ix_{table.name}_{index.name}"
-            seen.add(index.name)
-
-
-# 模块导入时执行一次（两处处理均幂等：Integer 非 BigInteger 实例；
-# 改名后的索引再次进入 seen 集合不会重复改名）
+# 模块导入时执行一次（幂等：Integer 非 BigInteger 实例）。
+# 注：models 中全部索引名已改为「表名前缀」唯一命名（schema 级全局唯一），
+# SQLite 建表不再需要索引名去重兜底，此处仅保留 BigInteger 主键兼容处理。
 _patch_bigint_primary_keys_for_sqlite()
-_dedupe_index_names_for_sqlite()
 
 
 # ============================================================

@@ -31,6 +31,80 @@ _MOCK_VOICES: list[dict[str, Any]] = [
     },
 ]
 
+# 通义千问 qwen3-tts-flash 真实音色（官方系统音色表，实测可用）
+_QIANWEN_VOICES: list[dict[str, Any]] = [
+    {
+        "voice_id": "Cherry",
+        "name": "Cherry（甜美女声）",
+        "gender": "female",
+        "style": "亲切自然",
+        "provider": "qianwen",
+    },
+    {
+        "voice_id": "Ethan",
+        "name": "晨煦（阳光男声）",
+        "gender": "male",
+        "style": "温暖活力",
+        "provider": "qianwen",
+    },
+    {
+        "voice_id": "Momo",
+        "name": "茉兔（活泼女声）",
+        "gender": "female",
+        "style": "撒娇搞怪",
+        "provider": "qianwen",
+    },
+    {
+        "voice_id": "Moon",
+        "name": "月白（帅气男声）",
+        "gender": "male",
+        "style": "率性洒脱",
+        "provider": "qianwen",
+    },
+    {
+        "voice_id": "Kai",
+        "name": "凯（治愈男声）",
+        "gender": "male",
+        "style": "温柔放松",
+        "provider": "qianwen",
+    },
+    {
+        "voice_id": "Mia",
+        "name": "乖小妹（温顺女声）",
+        "gender": "female",
+        "style": "乖巧柔和",
+        "provider": "qianwen",
+    },
+    {
+        "voice_id": "Bella",
+        "name": "萌宝（萝莉女声）",
+        "gender": "female",
+        "style": "可爱天真",
+        "provider": "qianwen",
+    },
+    {
+        "voice_id": "Ryan",
+        "name": "甜茶（戏感男声）",
+        "gender": "male",
+        "style": "张力十足",
+        "provider": "qianwen",
+    },
+    {
+        "voice_id": "Katerina",
+        "name": "卡捷琳娜（御姐女声）",
+        "gender": "female",
+        "style": "成熟韵律",
+        "provider": "qianwen",
+    },
+    {
+        "voice_id": "Eldric Sage",
+        "name": "沧明子（沧桑老者）",
+        "gender": "male",
+        "style": "沉稳睿智",
+        "provider": "qianwen",
+    },
+]
+
 # agnes Provider：OpenAI TTS 风格预置音色映射（网关 /audio/speech 就绪后生效；
 # 当前网关暂不支持 TTS，实际合成会自动降级 mock，音色仅作预留选择项）
 _AGNES_VOICES: list[dict[str, Any]] = [
@@ -78,8 +152,8 @@ _AGNES_VOICES: list[dict[str, Any]] = [
     },
 ]
 
-# 完整音色库：mock + agnes 全量映射
-TTS_VOICES: list[dict[str, Any]] = _MOCK_VOICES + _AGNES_VOICES
+# 完整音色库：qianwen（默认）+ mock + agnes
+TTS_VOICES: list[dict[str, Any]] = _QIANWEN_VOICES + _MOCK_VOICES + _AGNES_VOICES
 
 # agnes 默认音色（请求未指定或指定 mock 的 default 时回退到该值）
 AGNES_DEFAULT_VOICE_ID = "alloy"

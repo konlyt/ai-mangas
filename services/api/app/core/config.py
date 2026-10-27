@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     # 视频服务独立域名（创建/查询走 api.agnes-ai.cn，与文本/图像的 apihub 不同）
     AGNES_VIDEO_BASE_URL: str = ""
 
+    # ---- APIMart 网关（Seedream 图像生成，异步任务型）----
+    APIMART_BASE_URL: str = "https://api.apimart.ai/v1"
+    APIMART_API_KEY: str = ""
+    SEEDREAM_IMAGE_MODEL: str = "seedream-5-0-flash"
+
+    # ---- 网络代理（海外 API 需要走代理）----
+    HTTP_PROXY: str = ""
+    HTTPS_PROXY: str = ""
+
     # ---- 通义千问 TTS（DashScope）----
     QIANWEN_TTS_API_BASE_URL: str = "https://dashscope.aliyuncs.com"
     QIANWEN_TTS_API_KEY: str = ""
@@ -88,6 +97,11 @@ class Settings(BaseSettings):
     ZHIPU_VIDEO_BASE_URL: str = "https://open.bigmodel.cn/api/paas/v4"
     ZHIPU_VIDEO_API_KEY: str = ""
     ZHIPU_VIDEO_MODEL: str = "cogvideox-3"
+
+    # ---- MiniMax H3（Metaso 中转，视频生成）----
+    MINIMAX_VIDEO_BASE_URL: str = "https://metaso.cn/api/minimax/v2"
+    MINIMAX_VIDEO_API_KEY: str = ""
+    MINIMAX_VIDEO_MODEL: str = "MiniMax-H3"
 
     # ---- 默认视频 Provider 选择 ----
     VIDEO_PROVIDER_DEFAULT: str = "zhipu"

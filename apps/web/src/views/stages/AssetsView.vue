@@ -14,7 +14,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRawFile, UploadRequestOptions } from 'element-plus'
-import type { Character, Scene } from '@/types'
+import type { Character, CharacterLocks, Scene } from '@/types'
 import {
   generateCharacters,
   getCharacters,
@@ -24,6 +24,7 @@ import {
   getScenes,
   uploadReference,
   regenerateCharacter,
+  updateCharacterLocks,
   type CharacterWithReference,
 } from '@/api/assets'
 import { resumeGraph } from '@/api/graph'
@@ -61,6 +62,55 @@ const editPrompt = ref('')
 
 /** 选中的资产 ID 列表（批量操作） */
 const selectedIds = ref<string[]>([])
+
+/** 一致性锚点字段 → 中文标签映射（展示与编辑通用） */
+const LOCK_LABELS: Record<string, string> = {
+  costume: '服饰',
+  hairstyle: '发型',
+  appearance: '外貌',
+  body_type: '体型',
+}
+
+/** 锚点四键常量（与后端 CharacterLocksUpdate 白名单一致，供编辑表单遍历） */
+const LOCK_KEYS = ['costume', 'hairstyle', 'appearance', 'body_type'] as const
+
+/**
+ * 当前角色详情的四视图参考板 URL（非角色资产或未生成时为空串）
+ */
+const currentRefBoardUrl = computed<string>(
+  () => (currentAsset.value as Character | null)?.ref_board_url || ''
+)
+
+/**
+ * 当前详情是否为角色资产（场景无参考板与锚点，隐藏对应区块）
+ * 通过 ref_board_url 字段存在性判断（后端 SceneOut 不含该字段）
+ */
+const isCharacterDetail = computed(
+  () => !!currentAsset.value && 'ref_board_url' in (currentAsset.value as object)
+)
+
+/**
+ * 当前角色的一致性锚点键值对列表（过滤空值，用于标签展示）
+ */
+const lockEntries = computed<[string, string][]>(() => {
+  const locks = (currentAsset.value as Character | null)?.character_locks
+  if (!locks || typeof locks !== 'object') return []
+  return Object.entries(locks)
+    .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '')
+    .map(([k, v]) => [k, String(v)])
+})
+
+/** 锚点编辑对话框可见性 */
+const lockDialogVisible = ref(false)
+/** 锚点编辑表单（四项锚点，空串保存即清空对应项） */
+const lockForm = reactive<CharacterLocks>({
+  costume: '',
+  hairstyle: '',
+  appearance: '',
+  body_type: '',
+})
+/** 锚点保存中状态 */
+const lockSaving = ref(false)
 
 /**
  * 是否所有角色都已锁定
@@ -319,6 +369,48 @@ function handleSavePrompt(): void {
 }
 
 /**
+ * 打开锚点编辑对话框：把当前角色的 character_locks 回填进四项表单
+ */
+function openLockEditor(): void {
+  const c = currentAsset.value as Character | null
+  if (!c) return
+  const locks = c.character_locks
+  for (const key of LOCK_KEYS) {
+    const value = locks?.[key]
+    lockForm[key] = typeof value === 'string' ? value : ''
+  }
+  lockDialogVisible.value = true
+}
+
+/**
+ * 保存锚点编辑：调用后端整体替换端点，成功后同步抽屉与列表数据
+ * （先本地写入返回值保证抽屉即时可见，再后台刷新列表保证数据一致）
+ */
+async function handleSaveLocks(): Promise<void> {
+  const c = currentAsset.value as Character | null
+  if (!c) return
+  lockSaving.value = true
+  try {
+    const updated = await updateCharacterLocks(projectId.value, String(c.id), { ...lockForm })
+    // 同步抽屉当前角色对象（openDetail 持有的是列表项引用）
+    c.character_locks = updated
+    // 同步列表数据
+    const idx = characters.value.findIndex((item) => item.id === c.id)
+    if (idx !== -1) characters.value[idx] = { ...characters.value[idx], character_locks: updated }
+    lockDialogVisible.value = false
+    ElMessage.success('一致性锚点已保存')
+    // 后台重新拉取列表，并把抽屉指向刷新后的最新角色对象
+    await fetchAssets()
+    const fresh = characters.value.find((item) => item.id === c.id)
+    if (fresh) currentAsset.value = fresh
+  } catch (e) {
+    // 错误提示由 request 响应拦截器统一弹出
+  } finally {
+    lockSaving.value = false
+  }
+}
+
+/**
  * 确认全部资产锁定，进入分镜阶段
  */
 async function handleConfirm(): Promise<void> {
@@ -409,6 +501,21 @@ onMounted(() => {
             <div v-if="c.is_locked ?? c.locked" class="lock-badge">
               <el-icon><Lock /></el-icon>
               已锁定
+            </div>
+            <!-- 四视图参考板角标缩略图（点击可预览大图，不冒泡到卡片详情） -->
+            <div v-if="c.ref_board_url" class="ref-board-badge" @click.stop>
+              <el-image
+                :src="c.ref_board_url"
+                :preview-src-list="[c.ref_board_url]"
+                preview-teleported
+                fit="cover"
+                class="ref-board-thumb"
+              >
+                <template #error>
+                  <div class="ref-board-thumb ref-board-error"><Picture /></div>
+                </template>
+              </el-image>
+              <span class="ref-board-label">四视图参考板</span>
             </div>
           </div>
           <div class="card-body">
@@ -513,6 +620,38 @@ onMounted(() => {
           </template>
         </el-image>
 
+        <el-divider v-if="isCharacterDetail" content-position="left">参考板与一致性锚点</el-divider>
+        <!-- 四视图参考板大图预览；未生成时给灰色占位提示 -->
+        <template v-if="isCharacterDetail">
+          <el-image
+            v-if="currentRefBoardUrl"
+            :src="currentRefBoardUrl"
+            :preview-src-list="[currentRefBoardUrl]"
+            preview-teleported
+            fit="contain"
+            class="ref-board-preview"
+          >
+            <template #error>
+              <div class="image-placeholder large"><Picture /></div>
+            </template>
+          </el-image>
+          <div v-else class="ref-board-empty">未生成参考板（四视图参考板由资产流水线生成后写入）</div>
+          <!-- 一致性锚点四项（服饰/发型/外貌/体型），标签展示 + 内联编辑 -->
+          <div v-if="lockEntries.length" class="lock-tags">
+            <el-tag v-for="[k, v] in lockEntries" :key="k" size="small" effect="plain">
+              {{ LOCK_LABELS[k] || k }}：{{ v }}
+            </el-tag>
+          </div>
+          <div v-else class="ref-board-empty">暂无一致性锚点</div>
+          <div class="lock-actions-row">
+            <el-button size="small" type="primary" plain @click="openLockEditor">
+              <el-icon><Edit /></el-icon>
+              编辑锚点
+            </el-button>
+            <span class="lock-hint">锚点在生成时锁定角色特征，留空保存即清空对应项</span>
+          </div>
+        </template>
+
         <el-divider content-position="left">角色描述</el-divider>
         <p class="char-desc">{{ currentAsset.description || '暂无描述' }}</p>
 
@@ -532,6 +671,31 @@ onMounted(() => {
         </div>
       </div>
     </el-drawer>
+
+    <!-- 锚点编辑对话框：四项锚点内联编辑，留空保存即清空 -->
+    <el-dialog
+      v-model="lockDialogVisible"
+      title="编辑一致性锚点"
+      width="420px"
+      append-to-body
+    >
+      <div class="lock-form">
+        <div v-for="key in LOCK_KEYS" :key="key" class="lock-form-item">
+          <span class="lock-form-label">{{ LOCK_LABELS[key] }}</span>
+          <el-input
+            v-model="lockForm[key]"
+            :placeholder="`输入${LOCK_LABELS[key]}锚点，留空保存即清空`"
+            clearable
+          />
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="lockDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="lockSaving" @click="handleSaveLocks">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -688,6 +852,105 @@ onMounted(() => {
   color: white;
   font-size: 12px;
   border-radius: 12px;
+}
+
+/* 四视图参考板角标（卡片左上角缩略图 + 标签） */
+.ref-board-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.ref-board-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  cursor: zoom-in;
+  overflow: hidden;
+}
+
+.ref-board-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ai-bg-color);
+  color: var(--ai-text-placeholder);
+}
+
+.ref-board-label {
+  font-size: 10px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* 详情抽屉：参考板预览与锚点展示 */
+.ref-board-preview {
+  width: 100%;
+  height: 220px;
+  border-radius: 8px;
+  background: var(--ai-bg-color);
+}
+
+.ref-board-empty {
+  font-size: 12px;
+  color: var(--ai-text-placeholder);
+  background: var(--ai-bg-color);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.lock-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 6px;
+}
+
+/* 锚点编辑按钮行 */
+.lock-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 4px;
+}
+
+/* 锚点编辑表单 */
+.lock-form {
+  padding: 4px 0;
+}
+
+.lock-form-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.lock-form-item:last-child {
+  margin-bottom: 0;
+}
+
+.lock-form-label {
+  width: 42px;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: #666;
+  text-align: right;
+}
+
+.lock-hint {
+  font-size: 11px;
+  color: var(--ai-text-placeholder);
+  margin-bottom: 4px;
 }
 
 /* 卡片内容区 */

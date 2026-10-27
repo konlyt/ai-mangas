@@ -7,6 +7,8 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    CanvasShell: typeof import('./src/components/canvas/CanvasShell.vue')['default']
+    CharacterRefNode: typeof import('./src/components/canvas/nodes/CharacterRefNode.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElAvatar: typeof import('element-plus/es')['ElAvatar']
     ElBadge: typeof import('element-plus/es')['ElBadge']
@@ -59,9 +61,12 @@ declare module 'vue' {
     ProjectCard: typeof import('./src/components/ProjectCard.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    ShotCardNode: typeof import('./src/components/canvas/nodes/ShotCardNode.vue')['default']
     StageStepper: typeof import('./src/components/StageStepper.vue')['default']
     TaskCenter: typeof import('./src/components/TaskCenter.vue')['default']
+    TextNode: typeof import('./src/components/canvas/nodes/TextNode.vue')['default']
     VersionTimeline: typeof import('./src/components/VersionTimeline.vue')['default']
+    VideoNode: typeof import('./src/components/canvas/nodes/VideoNode.vue')['default']
   }
   export interface ComponentCustomProperties {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

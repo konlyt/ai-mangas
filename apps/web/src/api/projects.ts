@@ -43,20 +43,20 @@ export function getProject(id: string): Promise<Project> {
 
 /**
  * 更新项目
- * @param id - 项目 ID
+ * @param id - 项目 ID（Project.id 为 number，兼容传入字符串形式）
  * @param data - 更新参数
  * @returns 更新后的项目信息
  */
-export function updateProject(id: string, data: UpdateProjectParams): Promise<Project> {
+export function updateProject(id: number | string, data: UpdateProjectParams): Promise<Project> {
   return request.put(`/projects/${id}`, data)
 }
 
 /**
  * 删除项目
- * @param id - 项目 ID
+ * @param id - 项目 ID（Project.id 为 number，兼容传入字符串形式）
  * @returns 空响应
  */
-export function deleteProject(id: string): Promise<void> {
+export function deleteProject(id: number | string): Promise<void> {
   return request.delete(`/projects/${id}`)
 }
 

@@ -7,7 +7,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import QueueName, TaskStatus, TaskType
 
@@ -55,10 +55,8 @@ class TaskOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        """Pydantic 配置：允许从 ORM 对象读取属性。"""
-
-        from_attributes = True
+    # Pydantic v2 配置：允许从 ORM 对象读取属性
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TaskListOut(BaseModel):

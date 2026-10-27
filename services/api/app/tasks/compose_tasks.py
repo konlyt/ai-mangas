@@ -2,10 +2,14 @@
 视频合成任务（ARQ Worker）。
 
 从 tasks 表取出 compose 类型任务，收集项目分镜的视频片段：
-远程 URL 下载 / /static 本地复制 → 规格统一（分辨率不一致时转码）→ concat 拼接 →
-逐段混入 TTS 配音（无配音分段以静音补齐）→ 可选 BGM（音量 0.2）混音 →
-可选字幕（分镜级字幕 JSON 存在时生成 SRT 烧录；缺失时从分镜 dialogue +
-配音时长动态构建并写盘兜底，台词全空则跳过）→ 产出成片到
+远程 URL 下载 / /static 本地复制 → 规格统一（分辨率统一，视频轨 -an 无音频）→
+concat 拼接纯视频 → 逐分镜决策该段音频来源并生成定长音频段：
+    - auto（默认）：该镜已有 TTS 配音则用 TTS 覆盖；否则保留原视频原声；都没有则静音；
+    - keep_original：一律保留原视频原声（忽略 TTS，相当于"不重新配音"）；
+    - tts：一律使用 TTS 配音（无 TTS 的段回退原声，再不行静音）；
+TTS 段若时长超出本分镜镜头时长，自动倍速压缩（atempo）保证台词不串入下一分镜；
+不足补静音。各段音频 concat 成全长音轨后与纯视频合流；可选 BGM 混音；
+可选字幕（分镜级字幕 JSON 存在时烧录）→ 产出成片到
 static/outputs/{project_id}/final_{ts}.mp4（局部合成为 preview_{ts}.mp4），
 回写成片 URL 与任务状态。
 """
@@ -36,7 +40,7 @@ logger = get_logger()
 
 # 默认输出帧率（统一转码时使用）
 DEFAULT_FPS = 30
-# 音频采样率 / 声道（配音与静音段统一规格，便于 concat）
+# 音频采样率 / 声道（所有音频段统一规格，便于 concat）
 AUDIO_RATE = 44100
 # BGM 混音音量
 BGM_VOLUME = 0.2
@@ -44,6 +48,8 @@ BGM_VOLUME = 0.2
 SUBTITLE_JSON_TEMPLATE = "subtitles/{project_id}.json"
 # 成片输出目录模板（相对 STATIC_ROOT）
 OUTPUT_DIR_TEMPLATE = "outputs/{project_id}"
+# 允许的音频模式
+AUDIO_MODES = {"auto", "keep_original", "tts"}
 
 
 async def _publish_task_status(project_id: int, task_id: int, status: str, progress: int = 0):
@@ -101,97 +107,200 @@ def _output_url(project_id: int, filename: str) -> str:
     return f"/static/{OUTPUT_DIR_TEMPLATE.format(project_id=project_id)}/{filename}"
 
 
-def _build_audio_filter(has_voice: bool, has_bgm: bool) -> tuple[list[str], str]:
-    """构建混音 filter_complex 参数与音频输出标签。
+def _atempo_chain(ratio: float) -> str:
+    """生成 atempo 滤镜链，将播放速率压缩到 ratio 倍速（ratio>1 加速）。
+
+    ffmpeg 单级 atempo 范围 0.5~100；台词倍速一般不超过 3 倍，
+    超过 2 倍时链式拼接（atempo=2,atempo=ratio/2）。
 
     Args:
-        has_voice: 是否存在完整配音轨（输入索引 1）。
-        has_bgm: 是否存在 BGM（输入索引 2，若同时有配音轨，否则为 1）。
+        ratio: 目标倍速（>1 加速，<1 减速）。
 
     Returns:
-        tuple[list[str], str]: (filter_complex 参数列表, 音频输出标签映射参数)。
+        str: 可直接拼入 -af 的 atempo 链片段。
     """
-    if has_voice and has_bgm:
-        fc = f"[2:a]volume={BGM_VOLUME}[bg];[1:a][bg]amix=inputs=2:duration=first:dropout_transition=3[aout]"
-        return ["-filter_complex", fc, "-map", "0:v", "-map", "[aout]"]
-    if has_voice:
-        return ["-map", "0:v", "-map", "1:a"]
-    if has_bgm:
-        return ["-filter_complex", f"[1:a]volume={BGM_VOLUME}[aout]", "-map", "0:v", "-map", "[aout]"]
-    return ["-map", "0:v"]
+    if ratio <= 1.0:
+        return ""
+    if ratio <= 2.0:
+        return f"atempo={ratio:.4f}"
+    rest = ratio / 2.0
+    if rest <= 2.0:
+        return f"atempo=2.0,atempo={rest:.4f}"
+    return f"atempo=2.0,atempo=2.0,atempo={(ratio / 4.0):.4f}"
 
 
-async def _prepare_audio_track(
-    segments: list[dict[str, Any]],
+async def _build_silence_segment(dur: float, out: Path) -> None:
+    """生成指定时长的静音音频段（统一采样率/声道）。
+
+    Args:
+        dur: 段时长（秒）。
+        out: 输出文件路径（m4a）。
+
+    Returns:
+        None
+    """
+    await run_ffmpeg(
+        ["-y", "-f", "lavfi", "-i", f"anullsrc=r={AUDIO_RATE}:cl=stereo",
+         "-t", f"{dur:.3f}", "-c:a", "aac", "-b:a", "192k", str(out)],
+        log_tag="compose-audio-silence",
+    )
+
+
+async def _build_original_audio_segment(src_video: Path, dur: float, out: Path) -> None:
+    """从原视频片段中抽取音轨并统一规格（用于"保留原声"分镜）。
+
+    Args:
+        src_video: 原始下载后的分镜视频文件。
+        dur: 段时长（秒），用于精确截断对齐。
+        out: 输出文件路径（m4a）。
+
+    Returns:
+        None
+    """
+    await run_ffmpeg(
+        ["-y", "-i", str(src_video), "-vn",
+         "-t", f"{dur:.3f}",
+         "-c:a", "aac", "-b:a", "192k", "-ar", str(AUDIO_RATE), "-ac", "2",
+         str(out)],
+        log_tag="compose-audio-original",
+    )
+
+
+async def _build_tts_segment(tts_url: str, dur: float, work_dir: Path, index: int) -> Optional[Path]:
+    """将 TTS 配音压成严格等于本分镜时长的音频段（台词不串镜）。
+
+    TTS 音频短于分镜时长：末尾补静音；长于分镜时长：atempo 倍速压缩，
+    保证完整台词在本镜头内播完、绝不溢出到下一分镜。
+
+    Args:
+        tts_url: TTS 音频 URL（/static/ 或 http）。
+        dur: 本分镜视频时长（秒）。
+        work_dir: 临时工作目录。
+        index: 段序号（用于命名）。
+
+    Returns:
+        Optional[Path]: 生成的音频段文件路径；失败时 None（调用方降级静音）。
+    """
+    tts_file = work_dir / f"tts_src_{index:04d}.bin"
+    try:
+        await fetch_url_to_file(tts_url, tts_file)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[compose-task] TTS 音频获取失败 index={index}: {exc}")
+        return None
+
+    out = work_dir / f"aud_{index:04d}.m4a"
+    try:
+        info = await probe_media(tts_file)
+        tts_dur = float(info.get("duration") or 0)
+        if tts_dur <= 0:
+            # 探测失败：直接 apad 截断
+            af = "apad"
+        elif tts_dur > dur:
+            ratio = tts_dur / dur
+            chain = _atempo_chain(ratio)
+            # 倍速后再 apad（防止浮点误差不足），最后 -t 硬截到 dur
+            af = f"{chain},apad" if chain else "apad"
+        else:
+            # 短了：补静音到 dur
+            af = "apad"
+        await run_ffmpeg(
+            ["-y", "-i", str(tts_file),
+             "-af", af,
+             "-t", f"{dur:.3f}",
+             "-ar", str(AUDIO_RATE), "-ac", "2",
+             "-c:a", "aac", "-b:a", "192k",
+             str(out)],
+            log_tag="compose-audio-tts",
+        )
+        return out if out.is_file() else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[compose-task] TTS 段处理失败 index={index}: {exc}")
+        return None
+    finally:
+        tts_file.unlink(missing_ok=True)
+
+
+async def _build_full_audio_track(
+    decisions: list[dict[str, Any]],
     work_dir: Path,
     progress_cb,
 ) -> Optional[Path]:
-    """将各分镜 TTS 配音逐段补齐为分段时长并拼接成完整配音轨。
+    """按逐分镜决策生成全长音频轨。
 
-    每段处理：有配音则 apad 补齐 + 截断到分段时长；无配音生成静音段。
-    全部分段统一为 mp3 后经 concat demuxer 拼接，保证与视频时间轴对齐。
+    每段决策为 tts / original / silence，分别产出定长音频段后 concat。
 
     Args:
-        segments: 分段信息列表，每项含 index（序号）、duration（分段秒数）、
-            audio_url（TTS 音频 URL，可空）。
-        work_dir: 工作临时目录。
-        progress_cb: 进度回调（异步函数，参数为进度百分比）。
+        decisions: 每段决策列表，含 index / kind（tts|original|silence）/
+            duration / tts_url / src_video。
+        work_dir: 临时工作目录。
+        progress_cb: 进度回调。
 
     Returns:
-        Optional[Path]: 完整配音轨文件路径；项目完全无配音时返回 None。
+        Optional[Path]: 全长音频轨路径；全部段失败时 None。
     """
-    audio_items = [s for s in segments if s.get("audio_url")]
-    if not audio_items:
-        return None
-
-    voice_dir = work_dir / "audio"
-    voice_dir.mkdir(parents=True, exist_ok=True)
+    audio_dir = work_dir / "audio_segs"
+    audio_dir.mkdir(parents=True, exist_ok=True)
     part_files: list[Path] = []
+    total = max(1, len(decisions))
 
-    total = len(segments)
-    for i, seg in enumerate(segments):
-        dur = float(seg["duration"])
-        part = voice_dir / f"aud_{i:04d}.mp3"
-        audio_url = seg.get("audio_url")
-        if audio_url:
-            src = voice_dir / f"tts_{i:04d}.bin"
+    for i, dec in enumerate(decisions):
+        dur = float(dec["duration"])
+        part = audio_dir / f"seg_{i:04d}.m4a"
+        made: Optional[Path] = None
+        if dec["kind"] == "tts" and dec.get("tts_url"):
+            made = await _build_tts_segment(dec["tts_url"], dur, work_dir, i)
+        if made is None and dec["kind"] == "original" and dec.get("src_video"):
             try:
-                await fetch_url_to_file(audio_url, src)
-                await run_ffmpeg(
-                    ["-y", "-i", str(src), "-af", "apad", "-t", f"{dur:.3f}",
-                     "-ar", str(AUDIO_RATE), "-ac", "2", "-c:a", "libmp3lame", "-q:a", "4",
-                     str(part)],
-                    log_tag="compose-audio",
-                )
+                await _build_original_audio_segment(dec["src_video"], dur, part)
+                made = part
             except Exception as exc:  # noqa: BLE001
-                # 单段配音获取失败：容错降级为该段静音，不中断整体合成
-                logger.warning(
-                    f"[compose-task] 分段 {seg.get('storyboard_id')} 配音获取失败，改用静音: {exc}"
-                )
-            finally:
-                src.unlink(missing_ok=True)
-        if not part.is_file():
-            # 静音段补齐（anullsrc 源生成指定时长静音）
-            await run_ffmpeg(
-                ["-y", "-f", "lavfi", "-i", f"anullsrc=r={AUDIO_RATE}:cl=stereo",
-                 "-t", f"{dur:.3f}", "-c:a", "libmp3lame", "-q:a", "4", str(part)],
-                log_tag="compose-audio",
-            )
+                logger.warning(f"[compose-task] 原声段抽取失败 index={i}: {exc}")
+        if made is None:
+            await _build_silence_segment(dur, part)
+            made = part
+        elif made != part:
+            # TTS 输出文件改名到统一命名
+            made.replace(part)
         part_files.append(part)
         await progress_cb(55 + int(15 * (i + 1) / total))
 
-    # 拼接音频分段
-    audio_list = voice_dir / "audio_list.txt"
-    audio_list.write_text(
+    if not part_files:
+        return None
+    list_file = audio_dir / "list.txt"
+    list_file.write_text(
         "".join(f"file '{p.as_posix()}'\n" for p in part_files), encoding="utf-8"
     )
-    full_audio = voice_dir / "full_audio.mp3"
+    full = work_dir / "full_audio.m4a"
     await run_ffmpeg(
-        ["-y", "-f", "concat", "-safe", "0", "-i", str(audio_list),
-         "-c", "copy", str(full_audio)],
-        log_tag="compose-audio",
+        ["-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
+         "-c", "copy", str(full)],
+        log_tag="compose-audio-concat",
     )
-    return full_audio if full_audio.is_file() else None
+    return full if full.is_file() else None
+
+
+def _extract_dialogue_lines(desc: str) -> list[str]:
+    """从分镜 visual_description 中提取所有"角色：台词"行，逐句返回。
+
+    跳过以 △ 开头的动作描写行；角色名后的（动作）括号内容也去掉。
+    """
+    import re
+
+    lines: list[str] = []
+    for raw in (desc or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("△"):
+            continue
+        # 匹配 "角色名（动作）：台词" 或 "角色名：台词"
+        m = re.match(r"^([^：:（(]+?)(?:（[^）]*）)?[：:](.+)$", line)
+        if m:
+            speaker = m.group(1).strip()
+            speech = m.group(2).strip()
+            if speaker and speech:
+                lines.append(f"{speaker}：{speech}")
+    return lines
 
 
 def _build_subtitle_segments(
@@ -200,36 +309,33 @@ def _build_subtitle_segments(
 ) -> list[dict[str, Any]]:
     """从参与合成的分镜数据动态构建字幕分段（成片全局时间轴）。
 
-    字幕文件缺失时的兜底数据源（跨任务胶水）：以分镜 dialogue 为字幕文本，
-    时长优先取配音时长（storyboard.duration，TTS 任务回写的秒数），缺失时
-    回退该段视频实际时长；起始时间按前面各有效分段的视频时长累计，保证与
-    成片 concat 后的时间轴对齐。
-
-    Args:
-        boards: 参与合成的（分镜, 本地视频文件）配对列表，顺序与成片一致。
-        seg_durations: 各分段视频实际时长（秒），与 boards 一一对应。
-
-    Returns:
-        list[dict[str, Any]]: 字幕分段列表，每项含 storyboard_id / text /
-            start（成片全局秒）/ duration（秒）；台词全空时返回空列表。
+    每个分镜按台词句数均分该镜头时长，逐句显示（说一句切一句）。
+    字幕文本从 visual_description 提取；为空时回退 dialogue 字段。
     """
     segments: list[dict[str, Any]] = []
-    cursor = 0.0  # 成片时间轴游标：前面各有效分段的视频时长累计
+    cursor = 0.0
     for (sb, _file), seg_dur in zip(boards, seg_durations):
         seg_dur = float(seg_dur or 0)
-        text = (sb.dialogue or "").strip()
-        if text:
-            # 字幕时长优先取配音时长（秒），缺失时回退分段视频实际时长
-            duration = float(sb.duration or 0) or seg_dur
+        dialogue_lines = _extract_dialogue_lines(sb.visual_description)
+        if not dialogue_lines:
+            fallback = (sb.dialogue or "").strip()
+            dialogue_lines = [fallback] if fallback else []
+        if not dialogue_lines:
+            cursor += seg_dur
+            continue
+        # 每句固定显示 1.0 秒；超过分镜时长的句子截断
+        line_dur = 1.0
+        max_lines = max(1, int(seg_dur // line_dur))
+        dialogue_lines = dialogue_lines[:max_lines]
+        for idx, text in enumerate(dialogue_lines):
             segments.append(
                 {
                     "storyboard_id": sb.id,
                     "text": text,
-                    "start": round(cursor, 3),
-                    "duration": round(max(duration, 0), 3),
+                    "start": round(cursor + idx * line_dur, 3),
+                    "duration": line_dur,
                 }
             )
-        # 无台词分段不生成字幕，但仍消耗其画面时长（与全片字幕拼装逻辑一致）
         cursor += seg_dur
     return segments
 
@@ -239,22 +345,35 @@ def _ensure_subtitle_file(
     boards: list[tuple[Storyboard, Path]],
     seg_durations: list[float],
 ) -> bool:
-    """确保分镜级字幕 JSON 存在：缺失时从分镜数据动态构建并写盘（胶水逻辑）。
-
-    配音任务仅在 API 层按 dialogue + duration 动态拼装字幕、不落盘字幕
-    文件，而合成阶段只读 static/subtitles/{project_id}.json，导致字幕永远
-    不烧录；此处在合成侧兜底生成该文件，使既有烧录逻辑自然生效。
+    """确保分镜级字幕 JSON 存在：缺失时从分镜数据动态构建并写盘。
 
     Args:
         project_id: 项目 ID。
         boards: 参与合成的（分镜, 本地视频文件）配对列表。
-        seg_durations: 各分段视频实际时长（秒），与 boards 一一对应。
+        seg_durations: 各分段视频实际时长（秒）。
 
     Returns:
-        bool: 字幕文件已存在或本次成功生成时返回 True；台词全空或写盘
-            失败时返回 False（调用方跳过烧录）。
+        bool: 字幕文件已存在或本次成功生成时返回 True。
     """
     sub_json = STATIC_ROOT / SUBTITLE_JSON_TEMPLATE.format(project_id=project_id)
+    # 优先使用用户在配音工作台勾选的台词
+    selected_file = STATIC_ROOT / "subtitles" / f"{project_id}_selected.json"
+    if selected_file.is_file():
+        try:
+            selected_texts = json.loads(selected_file.read_text(encoding="utf-8"))
+            if selected_texts:
+                segments = []
+                t = 0.0
+                per = sum(seg_durations) / len(selected_texts) if selected_texts else 0
+                for text in selected_texts:
+                    segments.append({"start": round(t, 2), "duration": round(per, 2), "text": text})
+                    t += per
+                sub_json.parent.mkdir(parents=True, exist_ok=True)
+                sub_json.write_text(json.dumps({"project_id": project_id, "segments": segments}, ensure_ascii=False, indent=2), encoding="utf-8")
+                logger.info(f"[compose-task] 使用用户勾选字幕 {len(segments)} 条 project_id={project_id}")
+                return True
+        except Exception as exc:
+            logger.warning(f"[compose-task] 读取勾选字幕失败，回退默认: {exc}")
     if sub_json.is_file():
         return True
     segments = _build_subtitle_segments(boards, seg_durations)
@@ -267,10 +386,6 @@ def _ensure_subtitle_file(
         sub_json.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        logger.info(
-            f"[compose-task] 字幕文件缺失，已从分镜数据动态生成 "
-            f"project_id={project_id}, segments={len(segments)}"
-        )
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[compose-task] 字幕文件生成失败，跳过烧录: {exc}")
@@ -279,9 +394,6 @@ def _ensure_subtitle_file(
 
 async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optional[list[int]] = None) -> dict[str, Any]:
     """执行视频合成任务。
-
-    收集项目（或指定分镜）的视频片段，经统一规格、拼接、混音、烧录字幕后
-    产出成片并回写任务结果。
 
     Args:
         ctx: ARQ 任务上下文。
@@ -308,15 +420,14 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
         await _publish_task_status(task.project_id, task_id, TaskStatus.RUNNING.value, 5)
 
         start_time = time.time()
-        # 异常分支中引用的变量预定义，避免 NameError
         storyboards: list[Storyboard] = []
         is_partial = False
+        final_url = ""
         try:
-            # ---- 0. 前置检查：FFmpeg 可用性与参数解析 ----
+            # ---- 0. 前置检查：FFmpeg 可用性 ----
             try:
                 await run_ffmpeg(["-version"], log_tag="compose-check")
             except FFmpegNotFoundError:
-                # FFmpeg 缺失属于环境问题，重试无意义：直接置 DEAD 并给出明确错误信息
                 task.status = TaskStatus.DEAD
                 task.error_message = (
                     "未检测到 FFmpeg，无法合成视频：请设置 FFMPEG_PATH 环境变量、"
@@ -324,7 +435,6 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
                 )[:500]
                 await session.commit()
                 await _publish_task_status(task.project_id, task_id, TaskStatus.DEAD.value)
-                logger.error(f"[compose-task] 未检测到 FFmpeg task_id={task_id}")
                 return {"task_id": task_id, "status": "dead", "error": task.error_message}
 
             ids = storyboard_ids or _parse_storyboard_ids(task.idempotency_key)
@@ -347,14 +457,25 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
                 task.error_message = "没有可合成的分镜视频片段，请先生成视频素材"
                 await session.commit()
                 await _publish_task_status(task.project_id, task_id, TaskStatus.FAILED.value)
-                logger.warning(f"[compose-task] 无可用分镜视频 task_id={task_id}")
                 return {"task_id": task_id, "status": "failed", "error": "没有可合成的视频素材"}
 
             project = await session.get(Project, task.project_id)
-            bgm_url = (project.config or {}).get("bgm_url") if project else None
+            project_config = (project.config or {}) if project else {}
+            bgm_url = project_config.get("bgm_url")
+            audio_mode = project_config.get("audio_mode") or "auto"
+            if audio_mode not in AUDIO_MODES:
+                audio_mode = "auto"
 
-            # ---- 2. 下载 / 复制视频片段到临时目录（成功与否与分镜对象保持配对） ----
-            with TemporaryDirectory(prefix="compose_") as tmp:
+            est_duration = sum(float(s.duration or 0) for s in video_boards)
+            logger.info(
+                f"[compose-task] 开始合成 task_id={task_id}, "
+                f"storyboards={len(storyboards)}, video_segments={len(video_boards)}, "
+                f"partial={is_partial}, audio_mode={audio_mode}, est_duration={est_duration:.1f}s"
+            )
+
+            # ---- 2. 下载视频片段到临时目录 ----
+            fetch_start = time.time()
+            with TemporaryDirectory(prefix="compose_", ignore_cleanup_errors=True) as tmp:
                 work_dir = Path(tmp)
                 board_file_pairs: list[tuple[Storyboard, Path]] = []
                 total = len(video_boards)
@@ -364,7 +485,6 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
                         await fetch_url_to_file(sb.video_url, dest)
                         board_file_pairs.append((sb, dest))
                     except Exception as exc:  # noqa: BLE001
-                        # 单段素材获取失败：跳过该段继续合成（容错）
                         logger.warning(
                             f"[compose-task] 分镜 {sb.id} 视频获取失败，跳过: {exc}"
                         )
@@ -375,40 +495,48 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
 
                 if not board_file_pairs:
                     raise RuntimeError("所有分镜视频片段均获取失败，无法合成")
-                seg_files = [p for _, p in board_file_pairs]
+                logger.info(
+                    f"[compose-task] 片段获取完成 task_id={task_id}, "
+                    f"fetched={len(board_file_pairs)}/{total}, "
+                    f"fetch_latency={time.time() - fetch_start:.1f}s"
+                )
 
-                # ---- 3. 规格统一：以首段分辨率为基准，分辨率不一致的段落转码 ----
+                # ---- 3. 规格统一：纯视频（-an），逐段探测是否含原声 ----
                 await _publish_task_status(task.project_id, task_id, TaskStatus.RUNNING.value, 32)
-                base_info = await probe_media(seg_files[0])
+                normalize_start = time.time()
+                base_info = await probe_media(board_file_pairs[0][1])
                 target_w = max(2, (base_info["width"] or 640) // 2 * 2)
                 target_h = max(2, (base_info["height"] or 360) // 2 * 2)
                 target_fps = base_info["fps"] or DEFAULT_FPS
 
                 std_files: list[Path] = []
                 seg_durations: list[float] = []
-                for i, src in enumerate(seg_files):
+                seg_has_audio: list[bool] = []
+                for i, src in enumerate([p for _, p in board_file_pairs]):
                     info = await probe_media(src)
                     dst = work_dir / f"seg_{i:04d}.mp4"
-                    if (info["width"], info["height"]) != (target_w, target_h):
-                        # 分辨率不一致：统一缩放到目标规格并去掉原始音轨，
-                        # 保证 concat demuxer 流参数一致（配音由 TTS 轨负责）
-                        await run_ffmpeg(
-                            ["-y", "-i", str(src),
-                             "-vf", f"scale={target_w}:{target_h},setsar=1",
-                             "-r", f"{target_fps:.6f}",
-                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                             "-pix_fmt", "yuv420p", "-an", str(dst)],
-                            log_tag="compose-normalize",
-                        )
-                    else:
-                        # 规格一致：直接复制，避免重复转码
-                        dst.write_bytes(src.read_bytes())
+                    # 视频统一规格，音频轨不带到 concat（后面单独逐段决策混音）
+                    await run_ffmpeg(
+                        ["-y", "-i", str(src),
+                         "-vf", f"scale={target_w}:{target_h},setsar=1",
+                         "-r", f"{target_fps:.6f}",
+                         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                         "-pix_fmt", "yuv420p", "-an",
+                         str(dst)],
+                        log_tag="compose-normalize",
+                    )
                     std_files.append(dst)
-                    # 探测时长失败时回退到分镜预计时长（仅用于配音对齐）
                     fallback_dur = float(board_file_pairs[i][0].duration or 0)
                     seg_durations.append(info["duration"] or fallback_dur)
+                    seg_has_audio.append(bool(info.get("has_audio")))
 
-                # ---- 4. concat demuxer 拼接（转场/xfade 为简化取舍未实现） ----
+                logger.info(
+                    f"[compose-task] 规格统一完成 task_id={task_id}, "
+                    f"segments={len(std_files)}, target={target_w}x{target_h}, "
+                    f"normalize_latency={time.time() - normalize_start:.1f}s"
+                )
+
+                # ---- 4. concat demuxer 拼接纯视频 ----
                 await _publish_task_status(task.project_id, task_id, TaskStatus.RUNNING.value, 45)
                 concat_list = work_dir / "filelist.txt"
                 concat_list.write_text(
@@ -421,40 +549,40 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
                     log_tag="compose-concat",
                 )
 
-                # ---- 5. 配音轨：逐段混入 TTS（无配音段静音补齐） ----
-                audio_segments = [
-                    {
+                # ---- 5. 逐分镜音频决策并生成全长音轨 ----
+                decisions: list[dict[str, Any]] = []
+                for i, (sb, src) in enumerate(board_file_pairs):
+                    dur = seg_durations[i] or 0.0
+                    if dur <= 0:
+                        continue
+                    has_tts = bool(sb.audio_url)
+                    has_orig = seg_has_audio[i]
+                    if audio_mode == "keep_original":
+                        kind = "original" if has_orig else "silence"
+                    elif audio_mode == "tts":
+                        kind = "tts" if has_tts else ("original" if has_orig else "silence")
+                    else:  # auto：有 TTS 用 TTS，否则保留原声，都没有静音
+                        kind = "tts" if has_tts else ("original" if has_orig else "silence")
+                    decisions.append({
                         "index": i,
-                        "storyboard_id": board_file_pairs[i][0].id,
-                        "duration": seg_durations[i] or 0.0,
-                        "audio_url": board_file_pairs[i][0].audio_url,
-                    }
-                    for i in range(len(std_files))
-                    if (seg_durations[i] or 0.0) > 0
-                ]
+                        "kind": kind,
+                        "duration": dur,
+                        "tts_url": sb.audio_url,
+                        "src_video": src,
+                    })
 
                 async def _progress(p: int) -> None:
-                    """进度回调：广播音频处理阶段进度。
-
-                    Args:
-                        p: 进度百分比。
-
-                    Returns:
-                        None
-                    """
                     await _publish_task_status(
                         task.project_id, task_id, TaskStatus.RUNNING.value, min(p, 72)
                     )
 
-                full_audio = await _prepare_audio_track(audio_segments, work_dir, _progress)
+                full_audio = await _build_full_audio_track(decisions, work_dir, _progress)
 
-                # ---- 5.5 字幕兜底：字幕 JSON 缺失时从分镜数据动态生成（跨任务胶水） ----
-                # 仅全片合成时落盘（局部成片时间轴与全片字幕文件不一致，
-                # 落盘会污染全片字幕数据）；生成后步骤 7 的烧录逻辑自然生效
+                # ---- 5.5 字幕兜底（仅全片合成落盘） ----
                 if not is_partial:
                     _ensure_subtitle_file(task.project_id, board_file_pairs, seg_durations)
 
-                # ---- 6. BGM 下载（可选，来自项目配置 bgm_url） ----
+                # ---- 6. BGM 下载 ----
                 bgm_file: Optional[Path] = None
                 if bgm_url:
                     bgm_file = work_dir / "bgm.bin"
@@ -464,7 +592,7 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
                         logger.warning(f"[compose-task] BGM 获取失败，忽略: {exc}")
                         bgm_file = None
 
-                # ---- 7. 字幕：字幕 JSON 存在则生成 SRT（契约见 build_srt / 报告） ----
+                # ---- 7. 字幕 SRT ----
                 sub_srt: Optional[Path] = None
                 sub_json = STATIC_ROOT / SUBTITLE_JSON_TEMPLATE.format(project_id=task.project_id)
                 if sub_json.is_file():
@@ -474,14 +602,10 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
                         if srt_content:
                             sub_srt = work_dir / "sub.srt"
                             sub_srt.write_text(srt_content, encoding="utf-8")
-                            logger.info(
-                                f"[compose-task] 已加载字幕 project_id={task.project_id}, "
-                                f"segments={len(data.get('segments') or [])}"
-                            )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(f"[compose-task] 字幕数据解析失败，跳过烧录: {exc}")
 
-                # ---- 8. 最终混流：视频 + 配音 + BGM（可选） + 字幕烧录（可选） ----
+                # ---- 8. 最终混流：纯视频 + 全长音轨 + BGM（可选）+ 字幕 ----
                 await _publish_task_status(task.project_id, task_id, TaskStatus.RUNNING.value, 78)
                 out_dir = STATIC_ROOT / OUTPUT_DIR_TEMPLATE.format(project_id=task.project_id)
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -489,23 +613,38 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
                 prefix = "preview" if is_partial else "final"
                 out_file = out_dir / f"{prefix}_{ts}.mp4"
 
-                has_voice = full_audio is not None
-                has_bgm = bgm_file is not None
                 inputs = ["-i", str(silent_video)]
-                if has_voice:
+                has_audio_track = full_audio is not None
+                if has_audio_track:
                     inputs += ["-i", str(full_audio)]
-                if has_bgm:
-                    # BGM 循环播放，后续以 -shortest 截断到主轨长度
+                if bgm_file is not None:
                     inputs += ["-stream_loop", "-1", "-i", str(bgm_file)]
 
                 args = ["-y", *inputs]
-                audio_maps = _build_audio_filter(has_voice, has_bgm)
-                args += audio_maps
+                if has_audio_track and bgm_file is not None:
+                    # 音轨（1）与 BGM（2）混音：人声轨为主，BGM 压低
+                    args += [
+                        "-filter_complex",
+                        f"[2:a]volume={BGM_VOLUME}[bg];[1:a][bg]amix=inputs=2:duration=first:dropout_transition=3[aout]",
+                        "-map", "0:v", "-map", "[aout]",
+                    ]
+                elif has_audio_track:
+                    args += ["-map", "0:v", "-map", "1:a"]
+                elif bgm_file is not None:
+                    args += [
+                        "-filter_complex", f"[1:a]volume={BGM_VOLUME}[aout]",
+                        "-map", "0:v", "-map", "[aout]",
+                    ]
+                else:
+                    args += ["-map", "0:v"]
+
                 if sub_srt is not None:
-                    # 烧录字幕需重编码视频；工作目录为临时目录，此处用相对路径避免 Windows 盘符转义
-                    args += ["-vf", "subtitles=sub.srt",
-                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                             "-pix_fmt", "yuv420p"]
+                    args += [
+                        "-vf",
+                        "subtitles=sub.srt:force_style='FontName=Microsoft YaHei,FontSize=20,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=45'",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                        "-pix_fmt", "yuv420p",
+                    ]
                 else:
                     args += ["-c:v", "copy"]
                 args += ["-c:a", "aac", "-b:a", "192k", "-shortest",
@@ -527,10 +666,6 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
                 task.status = TaskStatus.DEAD
                 await session.commit()
                 await _publish_task_status(task.project_id, task_id, TaskStatus.DEAD.value)
-                logger.error(
-                    f"[compose-task] 任务耗尽重试 task_id={task_id}, "
-                    f"latency={latency_ms}ms, error={exc}"
-                )
                 return {"task_id": task_id, "status": "dead", "error": str(exc)}
 
             task.status = TaskStatus.FAILED
@@ -545,12 +680,11 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
         # ---- 9. 回写任务结果与事件 ----
         task.result_url = final_url
         task.status = TaskStatus.DONE
-        task.cost_points = 0  # 本地 FFmpeg 合成不消耗 AI 点数
+        task.cost_points = 0
         await session.commit()
         await _publish_task_status(task.project_id, task_id, TaskStatus.DONE.value, 100)
 
         latency_ms = int((time.time() - start_time) * 1000)
-        # 记录 agent_events（合成耗时）
         event = AgentEvent(
             graph_run_id=task.graph_run_id or "",
             project_id=task.project_id,
@@ -563,8 +697,10 @@ async def compose_video(ctx: dict[str, Any], task_id: int, storyboard_ids: Optio
         session.add(event)
         await session.commit()
 
+        out_size_mb = out_file.stat().st_size / (1024 * 1024)
         logger.info(
             f"[compose-task] 合成成功 task_id={task_id}, segments={len(board_file_pairs)}, "
-            f"partial={is_partial}, url={final_url}, latency={latency_ms}ms"
+            f"partial={is_partial}, url={final_url}, size={out_size_mb:.2f}MB, "
+            f"latency={latency_ms}ms"
         )
         return {"task_id": task_id, "status": "done", "url": final_url}

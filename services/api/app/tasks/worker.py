@@ -123,6 +123,9 @@ class WorkerSettings:
     retry_backoff = _backoff
     queue_name = "arq:queue"
     on_job_result = _on_job_result
+    # 串行执行：minimax 并发有限流(429)，且 Metaso query API 不按 task_id 过滤，
+    # 并行时所有 poll 会拿到同一个最新任务结果导致串镜。max_jobs=1 保证一个一个跑。
+    max_jobs = 1
 
     @staticmethod
     async def startup(ctx: dict[str, Any]) -> None:

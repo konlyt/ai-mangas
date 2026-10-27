@@ -185,7 +185,7 @@ def _normalize_voice_id(provider: Any, voice_id: str | None) -> str:
         if isinstance(provider, AgnesTTSProvider):
             return voice_id if voice_id and voice_id != "default" else "alloy"
         if isinstance(provider, QianwenTTSProvider):
-            return voice_id if voice_id and voice_id != "default" else "longxiaochun"
+            return voice_id if voice_id and voice_id != "default" else "Cherry"
     except Exception:  # noqa: BLE001
         pass
     return voice_id or "default"

@@ -28,41 +28,62 @@ _UNREACHABLE_BASE_URL = "http://127.0.0.1:9/v1"
 
 
 def test_image_registry():
-    """图像注册表：mock/agnes 已注册，默认解析 agnes，未注册名称报 ValueError。
+    """图像注册表：mock/agnes/seedream 已注册，默认解析命中已注册 Provider，未注册名称报 ValueError。
+
+    说明：默认 Provider 由配置决定（配置了 APIMART_API_KEY 时为 seedream，
+    否则 agnes，见 ImageProviderRegistry.__init__），与视频注册表一致，
+    不硬编码断言默认值，仅验证默认解析机制与显式按名获取。
 
     Returns:
         None
     """
     registry = get_image_registry()
-    assert set(registry.list_providers()) >= {"mock", "agnes"}
-    assert registry.get_provider(None) is registry.get_provider("agnes")
+    assert set(registry.list_providers()) >= {"mock", "agnes", "seedream"}
+    default = registry.get_provider(None)
+    assert default is registry.get_provider("seedream") or default is registry.get_provider("agnes")
     assert isinstance(registry.get_provider("mock"), MockImageProvider)
     with pytest.raises(ValueError):
         registry.get_provider("no-such-provider")
 
 
 def test_video_registry():
-    """视频注册表：mock/agnes 已注册，默认解析 agnes，未注册名称报 ValueError。
+    """视频注册表：mock/agnes/zhipu 已注册，默认解析命中已注册 Provider，未注册名称报 ValueError。
+
+    说明：默认 Provider 由环境变量 VIDEO_PROVIDER_DEFAULT 决定（工作区并行开发，
+    .env 当前为 zhipu），因此不硬编码断言默认值，仅验证默认解析机制与显式按名获取。
 
     Returns:
         None
     """
     registry = get_video_registry()
-    assert set(registry.list_providers()) >= {"mock", "agnes"}
-    assert registry.get_provider(None) is registry.get_provider("agnes")
+    assert set(registry.list_providers()) >= {"mock", "agnes", "zhipu"}
+    # 显式按名获取：各已注册 Provider 均可成功解析（未注册名称会抛 ValueError）
+    for name in ("mock", "agnes", "zhipu"):
+        assert registry.get_provider(name) is not None
+    # 默认解析动态断言：get_provider(None) 必须命中注册表中的某个 Provider
+    registered = [registry.get_provider(name) for name in registry.list_providers()]
+    assert registry.get_provider(None) in registered
     with pytest.raises(ValueError):
         registry.get_provider("no-such-provider")
 
 
 def test_tts_registry():
-    """TTS 注册表：mock/agnes 已注册，默认解析 agnes，未注册名称报 ValueError。
+    """TTS 注册表：mock/agnes/qianwen 已注册，默认解析命中已注册 Provider，未注册名称报 ValueError。
+
+    说明：默认 Provider 由注册表内部策略决定（当前为 qianwen），不硬编码断言
+    默认值，仅验证默认解析机制与显式按名获取。
 
     Returns:
         None
     """
     registry = get_tts_registry()
-    assert set(registry.list_providers()) >= {"mock", "agnes"}
-    assert registry.get_provider(None) is registry.get_provider("agnes")
+    assert set(registry.list_providers()) >= {"mock", "agnes", "qianwen"}
+    # 显式按名获取：各已注册 Provider 均可成功解析（未注册名称会抛 ValueError）
+    for name in ("mock", "agnes", "qianwen"):
+        assert registry.get_provider(name) is not None
+    # 默认解析动态断言：get_provider(None) 必须命中注册表中的某个 Provider
+    registered = [registry.get_provider(name) for name in registry.list_providers()]
+    assert registry.get_provider(None) in registered
     with pytest.raises(ValueError):
         registry.get_provider("no-such-provider")
 

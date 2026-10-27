@@ -27,13 +27,13 @@ import httpx
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.providers.video.base import VideoProvider
+from app.providers.video.base import VideoProvider, VideoRetryableError
 from app.providers.video.mock import MockVideoProvider
 
 logger = get_logger()
 
 
-class AgnesVideoRetryableError(RuntimeError):
+class AgnesVideoRetryableError(VideoRetryableError):
     """Agnes 视频可重试错误。
 
     用于标识 429/5xx/队列满/网络超时等临时性错误：

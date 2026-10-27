@@ -5,6 +5,8 @@
 （submit 提交 + poll 轮询），回写 result_url 与 status。
 支持通过任务 error_message 首部的 "provider=<name>;" 标记指定
 Provider（VID-07 换模重新生成），重试耗尽后自动 mock 兜底降级。
+可重试错误按跨厂商统一基类 VideoRetryableError 识别
+（429/5xx/限流/超时等，Agnes/智谱等各厂商 Retryable 异常均继承该基类）。
 """
 
 import asyncio
@@ -16,11 +18,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import AsyncSessionLocal
 from app.core.logging import get_logger
 from app.domains.generation import parse_provider_tag
-from app.models import AgentEvent, Storyboard, Task, TaskStatus
-from app.providers.video.agnes import AgnesVideoRetryableError
+from app.models import AgentEvent, Project, Storyboard, Task, TaskStatus
+from app.providers.video.base import VideoRetryableError
 from app.providers.video.registry import get_video_registry
 
 logger = get_logger()
+
+# 项目视觉风格 → 视频生成 prompt 前缀映射（让画面风格与所选剧本风格对齐）
+STYLE_PROMPT_PREFIX: dict[str, str] = {
+    "二次元": "日系二次元动画风格，线条干净利落，赛璐璐上色，色彩明亮通透，人物为动漫造型；",
+    "写实": "写实真人电影质感，自然光影，皮肤与服装纹理真实，纪录片级画面；",
+    "赛博朋克": "赛博朋克视觉风格，霓虹灯效，高对比冷暖撞色，雨夜都市质感，未来科技感；",
+    "水墨": "中国水墨画风格，留白写意，笔墨晕染，淡雅色调，传统东方美学；",
+    "油画": "古典油画质感，厚涂笔触，浓郁色彩层次，伦勃朗式明暗光影；",
+    "3D": "3D 动画渲染风格，PBR 材质，电影级全局光照，皮克斯/迪士尼质感；",
+}
 
 
 def _get_video_provider(name: str | None = None):
@@ -106,12 +118,18 @@ async def generate_video(ctx: dict[str, Any], task_id: int) -> dict[str, Any]:
         if task.status == TaskStatus.DONE:
             return {"task_id": task_id, "status": "done"}
 
-        # 查询关联分镜
+        # 查询关联分镜与项目风格
         storyboard = None
         if task.storyboard_id:
             storyboard = await session.get(Storyboard, task.storyboard_id)
 
-        prompt = storyboard.prompt if storyboard and storyboard.prompt else "动漫视频"
+        project = await session.get(Project, task.project_id)
+        project_style = (project.style or "").strip() if project else ""
+        style_prefix = STYLE_PROMPT_PREFIX.get(project_style, "")
+
+        base_prompt = storyboard.prompt if storyboard and storyboard.prompt else "动漫视频"
+        # 把项目视觉风格拼进 prompt，保证整剧人物画风统一
+        prompt = f"{style_prefix}{base_prompt}" if style_prefix else base_prompt
         image_url = (
             storyboard.keyframe_url if storyboard and storyboard.keyframe_url else ""
         )
@@ -176,8 +194,10 @@ async def generate_video(ctx: dict[str, Any], task_id: int) -> dict[str, Any]:
             )
             return {"task_id": task_id, "status": "done", "url": video_url}
 
-        except AgnesVideoRetryableError as exc:
-            # 可重试错误（队列满/限流/超时）：先交 ARQ 指数退避重试，耗尽后 mock 兜底
+        except VideoRetryableError as exc:
+            # 可重试错误（各厂商统一基类：429/5xx/限流/超时/队列满等临时性错误，
+            # 含 AgnesVideoRetryableError 与 ZhipuVideoRetryableError）：
+            # 先交 ARQ 指数退避重试，耗尽后 mock 兜底
             task.retry_count = (task.retry_count or 0) + 1
             task.error_message = str(exc)[:500]
 

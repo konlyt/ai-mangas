@@ -14,55 +14,55 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { StoryboardShot, TaskStatus } from '@/types'
+import type { TaskStatus } from '@/types'
 import { generateVideos, regenerateVideo } from '@/api/generate'
-import { getStoryboard } from '@/api/storyboard'
-import { getTask, listTasks, retryTask, cancelTask } from '@/api/tasks'
+import { retryTask, cancelTask } from '@/api/tasks'
+import { useVideoTaskSync, type VideoShot } from '@/composables/useVideoTaskSync'
 import StageStepper from '@/components/StageStepper.vue'
 
 const route = useRoute()
 const router = useRouter()
 const projectId = computed(() => route.params.id as string)
 
-/** 镜头状态类型 */
-interface VideoShot {
-  seq: number
-  storyboardId?: string
-  image_url?: string
-  video_url?: string
-  status: TaskStatus
-  progress: number
-  taskId?: string
-  /** 是否为降级（mock）结果 */
-  degraded?: boolean
-  /** 重新生成时选择的视频 Provider */
-  regenerateProvider: 'zhipu' | 'agnes' | 'mock'
-  /** 重新生成请求进行中 */
-  regenerating?: boolean
+/** 视频镜头列表与任务同步 / 轮询（组合式函数封装） */
+const {
+  loading,
+  videoShots,
+  generating,
+  fetchShots,
+  pollTaskStatus,
+  startGlobalPoll,
+  stopGlobalPoll,
+} = useVideoTaskSync(projectId)
+
+/** 视频预览对话框 */
+const previewVisible = ref(false)
+const currentShot = ref<VideoShot | null>(null)
+
+/**
+ * 点击卡片打开视频预览
+ * @param shot - 被点击的镜头对象
+ */
+function handleCardClick(shot: VideoShot): void {
+  if (shot.status !== 'success' || !shot.video_url) {
+    ElMessage.warning(`镜头 #${shot.seq} 暂无可播放的视频`)
+    return
+  }
+  currentShot.value = shot
+  previewVisible.value = true
 }
 
-/** 后端任务条目（与后端 TaskOut 字段对应，用于任务同步与轮询） */
-interface VideoTaskItem {
-  id: number | string
-  type?: string
-  storyboard_id?: number | string | null
-  status?: string
-  result_url?: string | null
-  error_message?: string | null
-  created_at?: string
+/**
+ * 对话框关闭时暂停视频播放
+ */
+function handlePreviewClose(): void {
+  const videoEl = document.querySelector('.preview-video') as HTMLVideoElement | null
+  if (videoEl) {
+    videoEl.pause()
+  }
+  previewVisible.value = false
+  currentShot.value = null
 }
-
-/** 任务状态轮询间隔（毫秒） */
-const POLL_INTERVAL_MS = 2000
-/** 任务状态轮询最大次数 */
-const POLL_MAX_TIMES = 150
-
-/** 加载状态 */
-const loading = ref(false)
-/** 视频镜头列表 */
-const videoShots = ref<VideoShot[]>([])
-/** 生成中状态 */
-const generating = ref(false)
 
 /** 生成模式 */
 const generateMode = ref<'image2video' | 'first-last'>('image2video')
@@ -86,31 +86,11 @@ const motionOptions = [
 ]
 /** 重新生成 Provider 选项（VID-07 降级换模） */
 const providerOptions = [
-  { label: 'zhipu（默认）', value: 'zhipu' },
+  { label: 'minimax（默认）', value: 'minimax' },
+  { label: 'zhipu', value: 'zhipu' },
   { label: 'agnes', value: 'agnes' },
   { label: 'mock（降级）', value: 'mock' },
 ]
-
-/**
- * 后端任务状态映射为前端状态
- * @param status - 后端任务状态（queued/running/done/failed/dead）
- * @returns 前端任务状态
- */
-function mapBackendStatus(status?: string): TaskStatus {
-  switch (status) {
-    case 'queued':
-      return 'pending'
-    case 'running':
-      return 'running'
-    case 'done':
-      return 'success'
-    case 'failed':
-    case 'dead':
-      return 'failed'
-    default:
-      return 'pending'
-  }
-}
 
 /**
  * 状态对应的标签类型与文案
@@ -129,147 +109,6 @@ function statusMeta(status: TaskStatus): { text: string; type: 'info' | 'warning
       return { text: '已取消', type: 'info' }
     default:
       return { text: '未知', type: 'info' }
-  }
-}
-
-/**
- * 获取分镜列表并初始化视频状态
- */
-async function fetchShots(): Promise<void> {
-  loading.value = true
-  try {
-    const data = await getStoryboard(projectId.value)
-    // 兼容两种返回结构：后端分镜数组 / 旧 { shots: [...] } 结构
-    const raw = (
-      Array.isArray(data) ? data : ((data as unknown as { shots?: unknown[] })?.shots ?? [])
-    ) as Array<Record<string, unknown>>
-    videoShots.value = raw.map((s, idx) => {
-      const shot = s as Partial<StoryboardShot> & Record<string, unknown>
-      return {
-        seq: (shot.seq as number) ?? (shot.sequence as number) ?? idx + 1,
-        storyboardId: shot.id != null ? String(shot.id) : undefined,
-        image_url: (shot.image_url as string) ?? (shot.keyframe_url as string),
-        video_url: shot.video_url as string | undefined,
-        status: 'pending' as TaskStatus,
-        progress: 0,
-        regenerateProvider: 'zhipu' as 'zhipu' | 'agnes' | 'mock',
-      }
-    })
-    await syncShotTasks()
-  } catch (e) {
-    ElMessage.error('获取分镜列表失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-/**
- * 拉取项目视频任务并回填各镜头的任务 ID / 状态 / 降级标记
- */
-async function syncShotTasks(): Promise<void> {
-  try {
-    const res = (await listTasks({ project_id: projectId.value, page_size: 100 })) as unknown as {
-      list?: VideoTaskItem[]
-    }
-    const items = res?.list ?? []
-    for (const shot of videoShots.value) {
-      if (!shot.storyboardId) continue
-      const candidates = items.filter(
-        (t) => t.type === 'video' && String(t.storyboard_id ?? '') === shot.storyboardId,
-      )
-      if (candidates.length === 0) continue
-      // 取创建时间最新的任务作为当前任务
-      const latest = candidates.reduce((a, b) =>
-        String(b.created_at ?? '') > String(a.created_at ?? '') ? b : a,
-      )
-      shot.taskId = String(latest.id)
-      shot.status = mapBackendStatus(latest.status)
-      if (latest.status === 'done') {
-        shot.progress = 100
-        if (latest.result_url) shot.video_url = latest.result_url
-        shot.degraded = !!latest.error_message?.includes('降级')
-      }
-    }
-  } catch {
-    // 任务同步失败不影响分镜展示
-  }
-}
-
-/**
- * 轮询任务状态直到完成，成功后按需弹出降级警告（VID-07 双通知之二）
- * @param shot - 视频镜头对象
- * @param taskId - 要轮询的任务 ID
- * @param times - 已轮询次数
- */
-function pollTaskStatus(shot: VideoShot, taskId: string, times = 0): void {
-  if (times >= POLL_MAX_TIMES) {
-    shot.status = 'failed'
-    ElMessage.error(`镜头 #${shot.seq} 生成超时，请稍后刷新查看`)
-    return
-  }
-  window.setTimeout(async () => {
-    try {
-      const t = (await getTask(taskId)) as unknown as VideoTaskItem
-      if (t.status === 'done') {
-        shot.status = 'success'
-        shot.progress = 100
-        if (t.result_url) shot.video_url = t.result_url
-        // 双通知之一：任务完成成功提示
-        ElMessage.success(`镜头 #${shot.seq} 重新生成完成`)
-        // 双通知之二：降级（mock）结果额外警告
-        if (t.error_message?.includes('降级')) {
-          shot.degraded = true
-          ElMessage.warning(`镜头 #${shot.seq} 当前为降级结果（mock），可稍后换回 agnes 重新生成`)
-        }
-        return
-      }
-      const backend = mapBackendStatus(t.status)
-      if (backend === 'failed') {
-        shot.status = 'failed'
-        ElMessage.error(`镜头 #${shot.seq} 生成失败`)
-        return
-      }
-      shot.status = backend
-      if (backend === 'running' && shot.progress < 90) shot.progress += 5
-      pollTaskStatus(shot, taskId, times + 1)
-    } catch {
-      // 单次查询失败继续轮询
-      pollTaskStatus(shot, taskId, times + 1)
-    }
-  }, POLL_INTERVAL_MS)
-}
-
-/** 全局轮询定时器 */
-let globalPollTimer: number | null = null
-
-/**
- * 启动全局任务轮询
- */
-function startGlobalPoll(): void {
-  stopGlobalPoll()
-  globalPollTimer = window.setInterval(async () => {
-    // 检查是否还有进行中的任务
-    const hasRunning = videoShots.value.some(
-      (s) => s.status === 'running' || s.status === 'pending'
-    )
-    if (!hasRunning) {
-      stopGlobalPoll()
-      generating.value = false
-      ElMessage.success('所有视频任务已完成')
-      return
-    }
-    // 自动刷新列表
-    await fetchShots()
-  }, 3000)
-}
-
-/**
- * 停止全局轮询
- */
-function stopGlobalPoll(): void {
-  if (globalPollTimer) {
-    clearInterval(globalPollTimer)
-    globalPollTimer = null
   }
 }
 
@@ -445,7 +284,13 @@ onMounted(() => {
     <!-- 视频列表 -->
     <el-empty v-if="videoShots.length === 0 && !loading" description="暂无分镜数据" />
     <div v-else class="video-grid">
-      <div v-for="shot in videoShots" :key="shot.seq" class="video-card">
+      <div
+        v-for="shot in videoShots"
+        :key="shot.seq"
+        class="video-card"
+        :class="{ 'clickable': shot.status === 'success' && shot.video_url }"
+        @click="handleCardClick(shot)"
+      >
         <div class="video-thumb">
           <el-image v-if="shot.image_url" :src="shot.image_url" fit="cover" class="thumb-img">
             <template #error>
@@ -458,11 +303,11 @@ onMounted(() => {
             <el-icon :size="32"><VideoCamera /></el-icon>
           </div>
           <span class="seq-badge">#{{ shot.seq }}</span>
-          <div class="hover-play" @click.stop>
+          <div v-if="shot.status === 'success' && shot.video_url" class="hover-play">
             <el-icon :size="32"><VideoPlay /></el-icon>
           </div>
         </div>
-        <div class="video-info">
+        <div class="video-info" @click.stop>
           <div class="status-row">
             <div class="status-tags">
               <el-tag :type="statusMeta(shot.status).type" size="small">
@@ -527,6 +372,37 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- 视频预览对话框 -->
+    <el-dialog
+      v-model="previewVisible"
+      :title="currentShot ? `镜头 #${currentShot.seq} 视频预览` : '视频预览'"
+      width="800px"
+      destroy-on-close
+      @close="handlePreviewClose"
+    >
+      <div class="preview-container">
+        <video
+          v-if="currentShot?.video_url"
+          :src="currentShot.video_url"
+          class="preview-video"
+          controls
+          autoplay
+        ></video>
+        <el-empty v-else description="暂无视频文件" />
+      </div>
+      <template #footer>
+        <el-button @click="handlePreviewClose">关闭</el-button>
+        <el-button
+          v-if="currentShot?.video_url"
+          type="primary"
+          @click="handleRegenerate(currentShot)"
+        >
+          <el-icon><RefreshRight /></el-icon>
+          重新生成
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -598,6 +474,15 @@ onMounted(() => {
   border: 1px solid var(--ai-border-color);
 }
 
+.video-card.clickable {
+  cursor: pointer;
+  transition: box-shadow 0.2s;
+}
+
+.video-card.clickable:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
 .video-thumb {
   position: relative;
   height: 130px;
@@ -639,11 +524,26 @@ onMounted(() => {
   color: #fff;
   opacity: 0;
   transition: opacity 0.2s;
-  cursor: pointer;
+  pointer-events: none;
 }
 
-.video-thumb:hover .hover-play {
+.video-card.clickable:hover .hover-play {
   opacity: 1;
+}
+
+.preview-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 300px;
+  background: #000;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.preview-video {
+  max-width: 100%;
+  max-height: 450px;
 }
 
 .video-info {

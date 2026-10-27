@@ -17,6 +17,7 @@ from app.schemas.asset import (
     AssetRegenerateRequest,
     CharacterGenerateRequest,
     CharacterLockRequest,
+    CharacterLocksUpdate,
 )
 
 router = APIRouter(tags=["资产"])
@@ -108,6 +109,30 @@ async def unlock_character(
     """
     character = await assets_domain.unlock_character(db, id, cid)
     return ok(data=character.model_dump())
+
+
+@router.put("/{id}/assets/characters/{cid}/locks", summary="更新角色一致性锚点")
+async def update_character_locks(
+    id: int,
+    cid: int,
+    req: CharacterLocksUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """更新指定角色的一致性锚点（character_locks，整体替换语义）。
+
+    Args:
+        id: 项目 ID。
+        cid: 角色 ID。
+        req: 锚点更新请求体（四锚点字段，至少提供一个）。
+        db: 异步数据库会话。
+        user: 当前登录用户。
+
+    Returns:
+        dict: 统一响应结构，data 为更新后的锚点字典。
+    """
+    locks = await assets_domain.update_character_locks(db, user.id, id, cid, req)
+    return ok(data=locks)
 
 
 @router.delete("/{id}/assets/characters/{cid}", summary="删除角色")

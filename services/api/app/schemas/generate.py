@@ -39,12 +39,13 @@ class VideoRegenerateRequest(BaseModel):
     """视频片段换模重新生成请求体。
 
     Attributes:
-        provider: 指定的视频生成厂商标识，"zhipu"（默认，智谱 CogVideoX）、
-            "agnes"（Agnes AI）或 "mock"（降级占位生成）；为空时使用系统默认 Provider。
+        provider: 指定的视频生成厂商标识，"minimax"（MiniMax H3，默认）、
+            "zhipu"（智谱 CogVideoX）、"agnes"（Agnes AI）或 "mock"（降级占位生成）；
+            为空时使用系统默认 Provider。
     """
 
-    provider: Optional[Literal["zhipu", "agnes", "mock"]] = Field(
-        None, description='视频 Provider："zhipu" / "agnes" / "mock"，为空时使用默认'
+    provider: Optional[Literal["minimax", "zhipu", "agnes", "mock"]] = Field(
+        None, description='视频 Provider："minimax" / "zhipu" / "agnes" / "mock"，为空时使用默认'
     )
 
 

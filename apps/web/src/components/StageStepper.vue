@@ -83,6 +83,7 @@ function handleClick(index: number): void {
   }
   emit('change', index)
 }
+
 </script>
 
 <template>
@@ -107,6 +108,7 @@ function handleClick(index: number): void {
 
 <style scoped>
 .stage-stepper {
+  position: relative;
   width: 100%;
   padding: 20px 24px;
   background: rgba(255, 255, 255, 0.7);

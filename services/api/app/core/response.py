@@ -58,6 +58,7 @@ class ErrorCode:
     UNAUTHORIZED = 40101
     FORBIDDEN = 40301
     NOT_FOUND = 40401
+    CONFLICT = 40901
     RATE_LIMIT = 42901
     SERVER_ERROR = 50001
     AI_ERROR = 50002
@@ -110,12 +111,22 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-        """请求参数校验异常处理器。"""
+        """请求参数校验异常处理器。
+
+        说明：Pydantic v2 自定义校验器（model_validator 等）抛出的 ValueError
+        会以异常对象形式挂在 err["ctx"]["error"] 上，直接放入 JSON 响应会
+        序列化失败，这里统一把 ctx 内对象转为字符串再返回。
+        """
+        errors = exc.errors()
+        for err in errors:
+            ctx = err.get("ctx")
+            if ctx:
+                err["ctx"] = {k: str(v) for k, v in ctx.items()}
         return JSONResponse(
             status_code=200,
             content={
                 "code": ErrorCode.PARAM_ERROR,
-                "data": exc.errors(),
+                "data": errors,
                 "message": "参数校验失败",
                 "timestamp": int(time.time()),
             },

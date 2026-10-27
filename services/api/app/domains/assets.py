@@ -24,6 +24,7 @@ from app.models import (
     Project,
     Scene,
     Script,
+    Storyboard,
 )
 from app.providers.image.registry import get_image_registry
 from app.providers.storage import save_artifact
@@ -31,6 +32,7 @@ from app.schemas.asset import (
     AssetVariantOut,
     CharacterGenerateRequest,
     CharacterLockRequest,
+    CharacterLocksUpdate,
     CharacterOut,
     SceneOut,
 )
@@ -401,6 +403,68 @@ async def unlock_character(
     return _build_character_out(character, list(var_result.scalars().all()))
 
 
+async def update_character_locks(
+    db: AsyncSession,
+    user_id: int,
+    project_id: int,
+    character_id: int,
+    locks: CharacterLocksUpdate,
+) -> Dict[str, Any]:
+    """更新角色的一致性锚点（character_locks，整体替换语义）。
+
+    处理规则：
+        - 仅接受白名单四键 costume / hairstyle / appearance / body_type
+          （schema 层已忽略白名单外键，此处再按白名单过滤一次防御）；
+        - 整体替换：值为 None 或空白串的键被清空，非空值覆盖写入；
+        - 四键全部清空时落库为空对象 {}（即清空全部锚点）。
+
+    Args:
+        db: 异步数据库会话。
+        user_id: 当前登录用户 ID，用于校验项目归属。
+        project_id: 项目 ID。
+        character_id: 角色 ID。
+        locks: 锚点更新请求体（CharacterLocksUpdate）。
+
+    Returns:
+        Dict[str, Any]: 更新后的锚点字典（仅含白名单内非空键）。
+
+    Raises:
+        BizException: 项目不存在（NOT_FOUND）、非项目所有者（FORBIDDEN）、
+            角色不存在（NOT_FOUND）时抛出。
+    """
+    # 1. 校验项目存在且属于当前用户
+    project = await db.get(Project, project_id)
+    if project is None:
+        raise BizException(code=ErrorCode.NOT_FOUND, message="项目不存在")
+    if project.user_id != user_id:
+        raise BizException(code=ErrorCode.FORBIDDEN, message="无权操作该项目")
+
+    # 2. 校验角色存在且属于该项目
+    result = await db.execute(
+        select(Character).where(
+            Character.id == character_id, Character.project_id == project_id
+        )
+    )
+    character = result.scalar_one_or_none()
+    if character is None:
+        raise BizException(code=ErrorCode.NOT_FOUND, message="角色不存在")
+
+    # 3. 整体替换构造新锚点：白名单过滤 + None/空白串清空对应键
+    whitelist = (locks.costume, locks.hairstyle, locks.appearance, locks.body_type)
+    keys = ("costume", "hairstyle", "appearance", "body_type")
+    new_locks: Dict[str, Any] = {}
+    for key, value in zip(keys, whitelist):
+        if value is None or not str(value).strip():
+            continue
+        new_locks[key] = str(value).strip()
+
+    # 4. 写库（空对象即清空全部锚点）
+    character.character_locks = new_locks
+    await db.commit()
+    logger.info(f"[assets] 角色 {character.name} 一致性锚点已更新 locks={new_locks}")
+    return new_locks
+
+
 async def delete_character(
     db: AsyncSession,
     project_id: int,
@@ -649,30 +713,63 @@ async def generate_scenes(db: AsyncSession, project_id: int) -> List[SceneOut]:
 async def get_consistency(db: AsyncSession, project_id: int) -> List[Dict[str, Any]]:
     """查询项目的一致性报告。
 
+    在既有返回结构上追加两个只读字段（不改变既有字段，方案 A7 前端展示用）：
+        - subject_name：校验对象名称。资产报告按 subject_id 反查角色名；
+          关键帧报告反查分镜序号拼为 "分镜#N"（subject_id 未落库时为 None）。
+        - check_mode：校验模式，直接读取 ConsistencyReport.check_mode 真实列
+          （由 consistency_agent 落库写入；历史行为迁移 b3f7a2c94d15 回填的
+          quality_gate）。列为 NULL 时回退 'quality_gate'（基础质检口径）。
+
     Args:
         db: 异步数据库会话。
         project_id: 项目 ID。
 
     Returns:
-        List[Dict]: 一致性报告列表。
+        List[Dict]: 一致性报告列表（含 subject_name / check_mode）。
     """
     result = await db.execute(
         select(ConsistencyReport).where(ConsistencyReport.project_id == project_id)
     )
     reports = result.scalars().all()
-    return [
-        {
-            "id": r.id,
-            "subject_type": r.subject_type.value,
-            "subject_id": r.subject_id,
-            "ref_asset_id": r.ref_asset_id,
-            "similarity_score": float(r.similarity_score),
-            "threshold": float(r.threshold),
-            "action": r.action.value,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-        }
-        for r in reports
-    ]
+
+    # 一次性反查项目角色与分镜，用于拼装 subject_name（避免逐条查询）
+    char_result = await db.execute(
+        select(Character).where(Character.project_id == project_id)
+    )
+    char_names = {c.id: c.name for c in char_result.scalars().all()}
+    sb_result = await db.execute(
+        select(Storyboard).where(Storyboard.project_id == project_id)
+    )
+    sb_seqs = {s.id: s.sequence for s in sb_result.scalars().all()}
+
+    output: List[Dict[str, Any]] = []
+    for r in reports:
+        score = float(r.similarity_score) if r.similarity_score is not None else None
+        # 拼装 subject_name：关键帧报告 → "分镜#N"；资产报告 → 角色名
+        if r.subject_type == ConsistencySubjectType.KEYFRAME:
+            subject_name = (
+                f"分镜#{sb_seqs[r.subject_id]}" if r.subject_id in sb_seqs else None
+            )
+        else:
+            subject_name = char_names.get(r.subject_id)
+        # 直接读真实 check_mode 列，NULL 时回退基础质检口径
+        check_mode = (r.check_mode or "").strip() or "quality_gate"
+        output.append(
+            {
+                "id": r.id,
+                "subject_type": r.subject_type.value,
+                "subject_id": r.subject_id,
+                # 只读展示字段：校验对象名称与校验模式（真实列值）
+                "subject_name": subject_name,
+                "check_mode": check_mode,
+                "ref_asset_id": r.ref_asset_id,
+                "similarity_score": score,
+                "threshold": float(r.threshold),
+                "action": r.action.value,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+        )
+    return output
 
 async def regenerate_character(
     db: AsyncSession,

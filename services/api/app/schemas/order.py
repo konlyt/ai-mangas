@@ -7,7 +7,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class OrderOut(BaseModel):
@@ -35,10 +35,8 @@ class OrderOut(BaseModel):
     paid_at: Optional[datetime] = None
     created_at: datetime
 
-    class Config:
-        """Pydantic 配置：允许从 ORM 对象读取属性。"""
-
-        from_attributes = True
+    # Pydantic v2 配置：允许从 ORM 对象读取属性
+    model_config = ConfigDict(from_attributes=True)
 
 
 class RechargeRequest(BaseModel):

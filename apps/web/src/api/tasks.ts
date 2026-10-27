@@ -26,6 +26,33 @@ export function getTask(id: number | string): Promise<Task> {
   return request.get(`/tasks/${id}`)
 }
 
+/** 后端任务终态枚举（GET /tasks/{id}/status 轻量端点返回的原始状态值） */
+export type BackendTaskStatus = 'queued' | 'running' | 'done' | 'failed' | 'dead'
+
+/**
+ * 任务状态查询结果
+ * 对齐 GET /tasks/{task_id}/status 响应 data（轻量字段，画布生成轮询用）
+ */
+export interface TaskStatusResult {
+  /** 任务 ID */
+  task_id: number
+  /** 任务状态（后端原始枚举：queued/running/done/failed/dead） */
+  status: BackendTaskStatus
+  /** 进度百分比（done=100 / running=50 / 其余 0） */
+  progress: number
+  /** 错误信息；done 时可能携带 "ref_dropped: ..." 降级标记（参考图被丢弃，任务仍成功） */
+  error_message: string | null
+}
+
+/**
+ * 查询任务状态（轻量端点，仅返回状态相关字段，画布节点生成轮询使用）
+ * @param id - 任务 ID
+ * @returns 任务状态 {task_id, status, progress, error_message}
+ */
+export function getTaskStatus(id: number | string): Promise<TaskStatusResult> {
+  return request.get(`/tasks/${id}/status`)
+}
+
 /**
  * 获取任务列表（分页）
  * @param params - 查询参数

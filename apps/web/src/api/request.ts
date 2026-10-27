@@ -26,6 +26,34 @@ function removeToken(): void {
 /** 业务错误码：未授权（访问令牌无效或已过期） */
 const BIZ_CODE_UNAUTHORIZED = 40101
 
+/** 业务错误码：画布保存版本冲突（revision 乐观锁，B2 契约，冲突信息由调用方自行处理） */
+export const BIZ_CODE_CANVAS_CONFLICT = 40901
+
+/**
+ * 业务错误对象
+ * 携带后端统一响应中的 code 与 data，供调用方按错误码分支处理
+ * （如画布保存冲突 40901 需读取 data.latest_revision 触发刷新重试）
+ */
+export class BizError extends Error {
+  /** 后端业务错误码 */
+  code: number
+  /** 后端响应 data 负载（各错误码语义不同） */
+  data: unknown
+
+  /**
+   * 构造业务错误
+   * @param code - 后端业务错误码
+   * @param message - 错误信息（直接来自后端 message 字段）
+   * @param data - 后端响应 data 负载
+   */
+  constructor(code: number, message: string, data: unknown) {
+    super(message)
+    this.name = 'BizError'
+    this.code = code
+    this.data = data
+  }
+}
+
 /** 是否正在跳转登录页，避免并发请求重复弹提示与跳转 */
 let isRedirectingToLogin = false
 
@@ -99,9 +127,14 @@ request.interceptors.response.use(
       handleUnauthorized(res.message || '登录已过期，请重新登录')
       return Promise.reject(new Error(res.message || '登录已过期'))
     }
-    // 业务失败：弹出错误消息
+    // 业务失败但由调用方按码自行处理的错误（如画布保存冲突 40901）：
+    // 不在此处弹错误提示（避免与调用方的 warning 双重弹窗），reject 携带 code/data 的 BizError
+    if (res.code === BIZ_CODE_CANVAS_CONFLICT) {
+      return Promise.reject(new BizError(res.code, res.message || '保存冲突', res.data))
+    }
+    // 业务失败：弹出错误消息，reject 携带 code/data 的 BizError 供调用方进一步分支
     ElMessage.error(res.message || '请求失败')
-    return Promise.reject(new Error(res.message || '请求失败'))
+    return Promise.reject(new BizError(res.code, res.message || '请求失败', res.data))
   },
   (error) => {
     const status = error?.response?.status

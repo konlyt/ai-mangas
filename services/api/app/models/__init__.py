@@ -196,7 +196,7 @@ class Project(Base):
 
     __table_args__ = (
         Index("idx_user_id", "user_id"),
-        Index("idx_status", "status"),
+        Index("idx_projects_status", "status"),
     )
 
 
@@ -235,13 +235,19 @@ class Character(Base):
     visual_prompt: Mapped[str] = mapped_column(Text, nullable=False, comment="视觉提示词")
     voice_id: Mapped[str | None] = mapped_column(String(50), nullable=True, comment="绑定音色ID")
     main_asset_url: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="主定妆照URL")
+    ref_board_url: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, comment="四视图参考板URL（头特写/正面/右侧90°/背面）"
+    )
+    character_locks: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, comment="不可变锚点JSON：costume/hairstyle/appearance/body_type"
+    )
     is_locked: Mapped[int] = mapped_column(Integer, default=0, comment="是否锁定")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), comment="创建时间"
     )
 
     __table_args__ = (
-        Index("idx_project_id", "project_id"),
+        Index("idx_characters_project_id", "project_id"),
     )
 
 
@@ -291,7 +297,7 @@ class Scene(Base):
     )
 
     __table_args__ = (
-        Index("idx_project_id", "project_id"),
+        Index("idx_scenes_project_id", "project_id"),
     )
 
 
@@ -329,7 +335,7 @@ class Storyboard(Base):
 
     __table_args__ = (
         Index("uk_project_seq", "project_id", "episode_id", "sequence", unique=True),
-        Index("idx_status", "status"),
+        Index("idx_storyboards_status", "status"),
         Index("idx_scene_id", "scene_id"),
     )
 
@@ -399,8 +405,8 @@ class Task(Base):
 
     __table_args__ = (
         Index("uk_idempotency", "idempotency_key", unique=True),
-        Index("idx_status", "status"),
-        Index("idx_project_id", "project_id"),
+        Index("idx_tasks_status", "status"),
+        Index("idx_tasks_project_id", "project_id"),
         Index("idx_queue", "queue_name", "status", "priority"),
     )
 
@@ -448,7 +454,7 @@ class GraphRun(Base):
 
     __table_args__ = (
         Index("uk_run_id", "run_id", unique=True),
-        Index("idx_project_id", "project_id"),
+        Index("idx_graph_runs_project_id", "project_id"),
     )
 
 
@@ -474,7 +480,7 @@ class AgentEvent(Base):
 
     __table_args__ = (
         Index("idx_run", "graph_run_id"),
-        Index("idx_project_time", "project_id", "created_at"),
+        Index("idx_agent_events_project_time", "project_id", "created_at"),
     )
 
 
@@ -495,12 +501,15 @@ class ConsistencyReport(Base):
     action: Mapped[ConsistencyAction] = mapped_column(
         SAEnum(ConsistencyAction), nullable=False, comment="处置动作"
     )
+    check_mode: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="校验模式：ref_lock/feature_card/quality_gate"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), comment="创建时间"
     )
 
     __table_args__ = (
-        Index("idx_project", "project_id", "subject_type"),
+        Index("idx_consistency_reports_project", "project_id", "subject_type"),
     )
 
 
@@ -520,7 +529,7 @@ class Revision(Base):
     )
 
     __table_args__ = (
-        Index("idx_project_time", "project_id", "created_at"),
+        Index("idx_revisions_project_time", "project_id", "created_at"),
     )
 
 
@@ -541,7 +550,7 @@ class OperationLog(Base):
 
     __table_args__ = (
         Index("idx_user_time", "user_id", "created_at"),
-        Index("idx_project", "project_id"),
+        Index("idx_operation_logs_project", "project_id"),
     )
 
 

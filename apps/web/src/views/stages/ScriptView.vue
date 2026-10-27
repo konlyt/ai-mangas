@@ -9,13 +9,15 @@
   @file views/stages/ScriptView.vue
 -->
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { Script, ScriptScene } from '@/types'
-import { getScript, updateScript, confirmScript, scoreScript } from '@/api/script'
-import type { ScriptScore } from '@/api/script'
+import { getScript, updateScript, confirmScript } from '@/api/script'
+import { getProject } from '@/api/projects'
 import { useSSE } from '@/composables/useSSE'
+import { useQualityScore } from '@/composables/useQualityScore'
+import { formatScriptToText } from '@/utils/scriptFormat'
 import StageStepper from '@/components/StageStepper.vue'
 
 const route = useRoute()
@@ -38,6 +40,8 @@ const editedContent = ref('')
 const activeSceneSeq = ref<number | null>(null)
 /** 是否处于全文编辑模式（默认 false = 阅读模式，true = textarea 编辑全文） */
 const editMode = ref(false)
+/** 自动生成时携带的 meta（从项目详情读取 style/genre） */
+const autoMeta = ref<Record<string, any>>({})
 /** 正在编辑的场次序号（null = 阅读模式） */
 const editingSceneSeq = ref<number | null>(null)
 /** 场次编辑临时副本 */
@@ -47,32 +51,10 @@ const editingSceneDraft = ref<string>('')
 const undoStack = ref<string[]>([])
 const redoStack = ref<string[]>([])
 
-/** 质量评分面板展示（接口失败时各分数为 null，展示 "—"） */
-const qualityScore = reactive<{
-  overall: number | null
-  conflict: number | null
-  character: number | null
-  pacing: number | null
-  hookDensity: number | null
-  suggestions: string[]
-  summary: string
-  estimated: boolean
-}>({
-  overall: null,
-  conflict: null,
-  character: null,
-  pacing: null,
-  hookDensity: null,
-  suggestions: [],
-  summary: '',
-  estimated: false,
-})
-
-/** 是否显示质量评分面板 */
-const showQualityPanel = ref(false)
-
-/** 评分请求进行中 */
-const scoring = ref(false)
+/** 质量评分（组合式函数封装面板状态与 SCR-07 评分请求） */
+const { qualityScore, showQualityPanel, scoring, computeQualityScore } = useQualityScore(
+  projectId,
+)
 
 /** 模型快切弹窗 */
 const modelDialogVisible = ref(false)
@@ -123,93 +105,6 @@ const showGenerateView = computed(
 )
 
 /**
- * 将结构化剧本 JSON 转换为人类可读的小说剧本文本
- * @param content - 剧本 content（JSON 对象或字符串）
- * @returns 格式化后的剧本文本
- */
-function formatScriptToText(content: unknown): string {
-  if (typeof content === 'string') {
-    return content
-  }
-  if (!content || typeof content !== 'object') {
-    return ''
-  }
-
-  const c = content as Record<string, any>
-  const lines: string[] = []
-
-  // 标题
-  if (c.title) {
-    lines.push(`《${c.title}》`)
-    lines.push('')
-  }
-
-  // 一句话梗概
-  if (c.logline) {
-    lines.push(`【故事梗概】`)
-    lines.push(c.logline)
-    lines.push('')
-  }
-
-  // 角色列表
-  if (Array.isArray(c.characters) && c.characters.length > 0) {
-    lines.push(`【主要角色】`)
-    c.characters.forEach((ch: any, idx: number) => {
-      const name = ch.name || `角色${idx + 1}`
-      const role = ch.role ? `（${ch.role}）` : ''
-      const parts: string[] = []
-      if (ch.age) parts.push(`${ch.age}岁`)
-      if (ch.gender) parts.push(ch.gender)
-      if (ch.personality) parts.push(`性格${ch.personality}`)
-      if (ch.appearance) parts.push(ch.appearance)
-      const desc = parts.length > 0 ? '：' + parts.join('，') : ''
-      lines.push(`${idx + 1}. ${name}${role}${desc}`)
-    })
-    lines.push('')
-  }
-
-  // 场次
-  if (Array.isArray(c.scenes) && c.scenes.length > 0) {
-    lines.push(`【正片内容】`)
-    lines.push('')
-    c.scenes.forEach((scene: any, idx: number) => {
-      const location = scene.location || scene.scene || '未知地点'
-      const time = scene.time || ''
-      const header = `第 ${idx + 1} 场 · ${location}${time ? ' ' + time : ''}`
-      lines.push(header)
-      lines.push('─'.repeat(header.length))
-
-      if (scene.description) {
-        lines.push(scene.description)
-        lines.push('')
-      }
-
-      // 对白
-      const dialogues = scene.dialogues || scene.dialogue_list || []
-      if (Array.isArray(dialogues) && dialogues.length > 0) {
-        dialogues.forEach((d: any) => {
-          if (typeof d === 'string') {
-            lines.push(d)
-          } else if (d.text || d.dialogue) {
-            const speaker = d.character || d.speaker || ''
-            const text = d.text || d.dialogue || ''
-            lines.push(`${speaker}：${text}`)
-          }
-        })
-        lines.push('')
-      }
-    })
-  }
-
-  // 兜底：如果都没有，直接 JSON 格式化
-  if (lines.length === 0) {
-    return JSON.stringify(c, null, 2)
-  }
-
-  return lines.join('\n')
-}
-
-/**
  * 获取项目剧本数据
  */
 async function fetchScript(): Promise<void> {
@@ -226,8 +121,23 @@ async function fetchScript(): Promise<void> {
       activeSceneSeq.value = sceneList[0].seq ?? 1
     }
   } catch (e) {
-    // 剧本不存在，展示生成引导
+    // 剧本不存在：如果是刚创建的新项目（项目里有 raw_input），自动开始生成
     script.value = null
+    try {
+      const pj = await getProject(projectId.value)
+      const pjAny = pj as any
+      const idea = pjAny.config?.raw_input || pjAny.raw_input || ''
+      if (idea && !streaming.value) {
+        originalIdea.value = idea
+        autoMeta.value = pjAny.config?.meta || {}
+        if (pjAny.style) autoMeta.value.style = pjAny.style
+        if (pjAny.genre) autoMeta.value.genre = pjAny.genre
+        // 延迟一拍，让空状态先渲染，再开始流式
+        setTimeout(() => handleGenerate(), 300)
+      }
+    } catch {
+      // 拿不到项目详情，保持空状态
+    }
   } finally {
     loading.value = false
   }
@@ -278,7 +188,7 @@ function handleGenerate(): void {
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
-      body: { raw_input: originalIdea.value || '请生成一个动漫剧本', meta: {} },
+      body: { raw_input: originalIdea.value || '请生成一个动漫剧本', meta: autoMeta.value },
     },
   )
 }
@@ -376,45 +286,6 @@ function saveSceneEdit(): void {
   // 同步刷新全文编辑区
   editedContent.value = formatScriptToText(c)
   ElMessage.success('场次已更新，记得点保存提交')
-}
-
-/**
- * 重置质量评分为空态（各项显示 "—"）
- */
-function resetQualityScore(): void {
-  qualityScore.overall = null
-  qualityScore.conflict = null
-  qualityScore.character = null
-  qualityScore.pacing = null
-  qualityScore.hookDensity = null
-  qualityScore.suggestions = []
-  qualityScore.summary = ''
-  qualityScore.estimated = false
-}
-
-/**
- * 调用后端真实评分接口获取质量评分（SCR-07）
- * 打开评分面板并请求 LLM 四维评分；接口失败时各项显示 "—" 而非随机数
- */
-async function computeQualityScore(): Promise<void> {
-  showQualityPanel.value = true
-  scoring.value = true
-  try {
-    const data = (await scoreScript(projectId.value)) as ScriptScore
-    qualityScore.overall = data.overall ?? null
-    qualityScore.conflict = data.conflict ?? null
-    qualityScore.character = data.character ?? null
-    qualityScore.pacing = data.pacing ?? null
-    qualityScore.hookDensity = data.hook_density ?? null
-    qualityScore.suggestions = Array.isArray(data.suggestions) ? data.suggestions : []
-    qualityScore.summary = data.summary || ''
-    qualityScore.estimated = Boolean(data.estimated)
-  } catch (e) {
-    // 接口失败：清空为 "—" 占位，错误提示由请求拦截器统一弹出
-    resetQualityScore()
-  } finally {
-    scoring.value = false
-  }
 }
 
 /**

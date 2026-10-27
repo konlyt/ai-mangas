@@ -18,14 +18,15 @@ class MockImageProvider(ImageProvider):
     async def generate(
         self,
         prompt: str,
-        ref_images: list[str] | None = None,
+        ref_images: list[dict] | None = None,
         params: dict | None = None,
     ) -> str:
         """生成占位图 URL。
 
         Args:
             prompt: 图像提示词（mock 模式下仅作日志用途）。
-            ref_images: 参考图列表（mock 模式下忽略）。
+            ref_images: 参考图列表（方案 A2 协议 [{data, mime}]）。
+                mock 不消费参考图，仅接受该参数以保持与 base 协议签名兼容。
             params: 额外参数，可包含 width/height 控制占位图尺寸。
 
         Returns:

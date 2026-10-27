@@ -66,17 +66,22 @@ async def _enqueue_generation_tasks(task_type: TaskType, task_ids: List[int]) ->
         pool = await create_arq_pool()
         if pool is None:
             logger.warning(
-                f"[generation] arq 不可用，任务待处理 func={func_name}, count={len(task_ids)}"
+                f"[generation] arq 不可用，任务待处理 type={task_type.value}, "
+                f"func={func_name}, count={len(task_ids)}"
             )
             return
         for task_id in task_ids:
             await pool.enqueue_job(func_name, task_id)
+        # 慢路径埋点：投递成功（任务数 / 类型 / 业务队列名）
         logger.info(
-            f"[generation] 批量任务已投递 ARQ func={func_name}, count={len(task_ids)}"
+            f"[generation] 批量任务已投递 ARQ type={task_type.value}, "
+            f"queue={QueueName.NORMAL.value}, func={func_name}, count={len(task_ids)}"
         )
     except Exception as exc:  # noqa: BLE001
+        # 慢路径埋点：投递失败（原因），任务保持 queued 待重试投递
         logger.warning(
-            f"[generation] 投递 ARQ 失败 func={func_name}, count={len(task_ids)}: {exc}"
+            f"[generation] 投递 ARQ 失败 type={task_type.value}, "
+            f"func={func_name}, count={len(task_ids)}: {exc}"
         )
 
 
@@ -154,13 +159,18 @@ async def generate_keyframes(
         if req.mode == "only_pending" and sb.keyframe_url:
             continue
 
-        idem_key = _make_idempotency_key(project_id, sb.id, TaskType.IMAGE)
-        # 幂等：若已存在相同 key 的任务则跳过
-        existing = await db.execute(
-            select(Task).where(Task.idempotency_key == idem_key)
-        )
-        if existing.scalar_one_or_none():
-            continue
+        # mode="all" 时允许强制重新生成，跳过幂等检查
+        if req.mode != "all":
+            idem_key = _make_idempotency_key(project_id, sb.id, TaskType.IMAGE)
+            # 幂等：若已存在相同 key 的任务则跳过
+            existing = await db.execute(
+                select(Task).where(Task.idempotency_key == idem_key)
+            )
+            if existing.scalar_one_or_none():
+                continue
+        else:
+            # 重新生成时用带时间戳的幂等键，避免和旧任务冲突
+            idem_key = f"{project_id}-{sb.id}-{TaskType.IMAGE.value}-regen-{uuid.uuid4().hex[:12]}"
 
         task = Task(
             project_id=project_id,

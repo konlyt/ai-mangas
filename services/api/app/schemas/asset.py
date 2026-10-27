@@ -7,7 +7,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models import AssetOwnerType, AssetVariantStatus
 
@@ -39,10 +39,8 @@ class AssetVariantOut(BaseModel):
     status: AssetVariantStatus
     created_at: datetime
 
-    class Config:
-        """Pydantic 配置：允许从 ORM 对象读取属性。"""
-
-        from_attributes = True
+    # Pydantic v2 配置：允许从 ORM 对象读取属性
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CharacterOut(BaseModel):
@@ -56,6 +54,8 @@ class CharacterOut(BaseModel):
         visual_prompt: 视觉提示词。
         voice_id: 绑定音色 ID。
         main_asset_url: 主定妆照 URL。
+        ref_board_url: 四视图参考板 URL（头特写/正面/右侧90°/背面四宫格）。
+        character_locks: 不可变锚点 JSON（costume/hairstyle/appearance/body_type）。
         reference_url: 用户上传的参考图 URL。
         is_locked: 是否锁定。
         variants: 该角色的资产变体列表。
@@ -69,15 +69,15 @@ class CharacterOut(BaseModel):
     visual_prompt: str
     voice_id: Optional[str] = None
     main_asset_url: Optional[str] = None
+    ref_board_url: Optional[str] = None
+    character_locks: Optional[dict] = None
     reference_url: Optional[str] = None
     is_locked: int = 0
     variants: List[AssetVariantOut] = Field(default_factory=list)
     created_at: datetime
 
-    class Config:
-        """Pydantic 配置：允许从 ORM 对象读取属性。"""
-
-        from_attributes = True
+    # Pydantic v2 配置：允许从 ORM 对象读取属性
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SceneOut(BaseModel):
@@ -103,10 +103,8 @@ class SceneOut(BaseModel):
     is_locked: int = 0
     created_at: datetime
 
-    class Config:
-        """Pydantic 配置：允许从 ORM 对象读取属性。"""
-
-        from_attributes = True
+    # Pydantic v2 配置：允许从 ORM 对象读取属性
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CharacterGenerateRequest(BaseModel):
@@ -129,6 +127,54 @@ class CharacterLockRequest(BaseModel):
     """
 
     main_variant_id: Optional[int] = Field(None, description="主定妆照变体 ID")
+
+
+class CharacterLocksUpdate(BaseModel):
+    """角色一致性锚点更新请求体。
+
+    四个锚点字段均为可选字符串；整体替换语义：
+        - 显式提供的字段覆盖对应锚点（空字符串视为清空该锚点）；
+        - 未提供（None）的字段清空对应锚点；
+        - 四字段全为 None 时校验失败（至少提供一个锚点字段）。
+
+    白名单校验：模型仅声明上述四字段，Pydantic 默认忽略请求体中的
+    其他未知键（extra='ignore'），即白名单外字段静默丢弃。
+
+    Attributes:
+        costume: 服饰锚点。
+        hairstyle: 发型锚点。
+        appearance: 外貌锚点。
+        body_type: 体型锚点。
+
+    Raises:
+        ValueError: 四个锚点字段全为 None（未提供任何锚点）时抛出，
+            经 RequestValidationError 处理器转为 40001 参数错误响应。
+    """
+
+    costume: Optional[str] = Field(None, description="服饰锚点（空串=清空）")
+    hairstyle: Optional[str] = Field(None, description="发型锚点（空串=清空）")
+    appearance: Optional[str] = Field(None, description="外貌锚点（空串=清空）")
+    body_type: Optional[str] = Field(None, description="体型锚点（空串=清空）")
+
+    # Pydantic v2 校验器：至少显式提供一个锚点字段
+    @model_validator(mode="after")
+    def _check_at_least_one(self) -> "CharacterLocksUpdate":
+        """校验至少提供一个锚点字段。
+
+        Returns:
+            CharacterLocksUpdate: 校验通过的本实例。
+
+        Raises:
+            ValueError: 四个锚点字段全为 None 时抛出。
+        """
+        if (
+            self.costume is None
+            and self.hairstyle is None
+            and self.appearance is None
+            and self.body_type is None
+        ):
+            raise ValueError("至少提供一个锚点字段（costume/hairstyle/appearance/body_type）")
+        return self
 
 
 class AssetRegenerateRequest(BaseModel):

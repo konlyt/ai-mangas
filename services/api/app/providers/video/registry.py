@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.providers.video.agnes import AgnesVideoProvider
 from app.providers.video.base import VideoProvider
+from app.providers.video.minimax import MinimaxVideoProvider
 from app.providers.video.mock import MockVideoProvider
 from app.providers.video.zhipu import ZhipuVideoProvider
 
@@ -38,6 +39,7 @@ class VideoProviderRegistry:
         self.register("mock", MockVideoProvider())
         self.register("agnes", AgnesVideoProvider())
         self.register("zhipu", ZhipuVideoProvider())
+        self.register("minimax", MinimaxVideoProvider())
 
     def register(self, name: str, provider: VideoProvider) -> None:
         """注册一个视频生成 Provider。

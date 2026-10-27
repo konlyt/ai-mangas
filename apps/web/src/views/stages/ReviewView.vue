@@ -13,10 +13,11 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { StoryboardShot } from '@/types'
+import type { Storyboard } from '@/types'
 import { getOutput, exportVideo, getLatestExport, type ComposeOutput } from '@/api/compose'
 import { getStoryboard } from '@/api/storyboard'
 import { resumeGraph } from '@/api/graph'
+import { useVideoPlayer } from '@/composables/useVideoPlayer'
 import StageStepper from '@/components/StageStepper.vue'
 
 const route = useRoute()
@@ -29,17 +30,9 @@ const videoRef = ref<HTMLVideoElement | null>(null)
 
 /** 合成输出 */
 const output = ref<ComposeOutput | null>(null)
-/** 分镜列表 */
-const shots = ref<StoryboardShot[]>([])
+/** 分镜列表（对齐后端 StoryboardOut） */
+const shots = ref<Storyboard[]>([])
 
-/** 播放状态 */
-const playing = ref(false)
-/** 播放进度（秒） */
-const currentTime = ref(0)
-/** 音量 */
-const volume = ref(80)
-/** 倍速 */
-const playbackRate = ref(1)
 /** 倍速选项 */
 const rateOptions = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
@@ -69,21 +62,22 @@ const shareConfig = reactive({
 /** 二维码弹窗 */
 const qrDialogVisible = ref(false)
 
-/**
- * 视频总时长
- */
-const duration = computed(() => output.value?.duration ?? 0)
-
-/**
- * 格式化时间
- * @param sec - 秒数
- * @returns mm:ss 格式字符串
- */
-function formatTime(sec: number): string {
-  const m = Math.floor(sec / 60)
-  const s = Math.floor(sec % 60)
-  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
-}
+/** 播放器控制（组合式函数封装，时长来源于合成输出） */
+const {
+  playing,
+  currentTime,
+  volume,
+  playbackRate,
+  duration,
+  formatTime,
+  togglePlay,
+  handleTimeUpdate,
+  handleSeek,
+  handleVolumeChange,
+  changeRate,
+  handleFullscreen,
+  seekTo,
+} = useVideoPlayer(videoRef, computed(() => output.value?.duration ?? 0))
 
 /**
  * 获取输出与分镜数据
@@ -96,7 +90,7 @@ async function fetchData(): Promise<void> {
       getStoryboard(projectId.value).catch(() => null),
     ])
     output.value = out
-    shots.value = sb?.shots ?? []
+    shots.value = sb ?? []
   } catch (e) {
     ElMessage.error('获取数据失败')
   } finally {
@@ -105,75 +99,11 @@ async function fetchData(): Promise<void> {
 }
 
 /**
- * 播放/暂停切换
- */
-function togglePlay(): void {
-  if (!videoRef.value) return
-  if (playing.value) {
-    videoRef.value.pause()
-  } else {
-    videoRef.value.play()
-  }
-}
-
-/**
- * 时间更新
- */
-function handleTimeUpdate(): void {
-  if (videoRef.value) {
-    currentTime.value = videoRef.value.currentTime
-  }
-}
-
-/**
- * 进度条跳转
- * @param value - 新的进度值（秒），单值滑块为 number
- */
-function handleSeek(value: number | number[]): void {
-  const v = Array.isArray(value) ? value[0] : value
-  if (videoRef.value && typeof v === 'number') {
-    videoRef.value.currentTime = v
-    currentTime.value = v
-  }
-}
-
-/**
- * 音量调节
- */
-function handleVolumeChange(): void {
-  if (videoRef.value) {
-    videoRef.value.volume = volume.value / 100
-  }
-}
-
-/**
- * 倍速切换
- * @param rate - 倍速
- */
-function changeRate(rate: number): void {
-  playbackRate.value = rate
-  if (videoRef.value) {
-    videoRef.value.playbackRate = rate
-  }
-}
-
-/**
- * 全屏
- */
-function handleFullscreen(): void {
-  videoRef.value?.requestFullscreen()
-}
-
-/**
  * 跳转到指定分镜
  * @param seq - 镜头序号
  */
 function jumpToShot(seq: number): void {
-  const time = (seq - 1) * 3
-  if (videoRef.value) {
-    videoRef.value.currentTime = time
-    currentTime.value = time
-  }
+  seekTo((seq - 1) * 3)
 }
 
 /**
@@ -320,15 +250,15 @@ onMounted(() => {
           <div v-else class="shot-list">
             <div
               v-for="shot in shots"
-              :key="shot.seq"
+              :key="shot.sequence"
               class="shot-jump-item"
-              @click="jumpToShot(shot.seq)"
+              @click="jumpToShot(shot.sequence)"
             >
-              <span class="shot-seq">#{{ shot.seq }}</span>
+              <span class="shot-seq">#{{ shot.sequence }}</span>
               <span class="shot-info text-ellipsis">
-                {{ shot.dialogue || shot.description || '无对白' }}
+                {{ shot.dialogue || shot.visual_description || '无对白' }}
               </span>
-              <el-button size="small" text type="primary" @click.stop="handleRegenerate(shot.seq)">
+              <el-button size="small" text type="primary" @click.stop="handleRegenerate(shot.sequence)">
                 <el-icon><Refresh /></el-icon>
                 重生成
               </el-button>

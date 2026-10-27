@@ -12,260 +12,62 @@
   @file views/stages/StoryboardView.vue
 -->
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { StoryboardShot } from '@/types'
 import {
-  getStoryboard,
-  updateStoryboard,
-  generateStoryboard,
   reorderStoryboard,
   checkContinuity,
   type ContinuityCheckResult,
 } from '@/api/storyboard'
-import { getScript } from '@/api/script'
-import { resumeGraph } from '@/api/graph'
+import { useStoryboardRows } from '@/composables/useStoryboardRows'
+import { useDragReorder } from '@/composables/useDragReorder'
 import StageStepper from '@/components/StageStepper.vue'
 
 const route = useRoute()
 const router = useRouter()
 const projectId = computed(() => route.params.id as string)
 
-/** 本地分镜行类型：在 StoryboardShot 基础上补充后端字段与渲染 key */
-type ShotRow = StoryboardShot & {
-  /** 渲染 key（后端 id 或本地生成的稳定 key） */
-  key: string
-  /** 后端分镜 ID（本地新增未保存时为 undefined） */
-  id?: number
-  /** 预计时长（秒） */
-  duration?: number
-  /** 绘图提示词 */
-  prompt?: string
-}
+/** 分镜行状态与增删改拆合逻辑（组合式函数封装） */
+const {
+  loading,
+  rows,
+  scriptContent,
+  selectedSeq,
+  targetDuration,
+  editingShot,
+  totalDuration,
+  durationDiff,
+  avgDuration,
+  fetchStoryboard,
+  handleGenerate,
+  selectShot,
+  handleSaveShot,
+  handleAddShot,
+  handleDeleteShot,
+  handleSplitShot,
+  handleMergeShot,
+  rhythmWidth,
+  isPeak,
+} = useStoryboardRows(projectId)
 
-/** 加载状态 */
-const loading = ref(false)
-/** 本地分镜行列表（后端数据归一化后的可编辑副本） */
-const rows = ref<ShotRow[]>([])
-/** 剧本原文（左栏） */
-const scriptContent = ref('')
-/** 当前选中的镜头序号 */
-const selectedSeq = ref<number | null>(null)
-/** 目标总时长（秒） */
-const targetDuration = ref(120)
-/** 本地新增分镜的 key 计数器 */
-let localKeySeq = 0
-
-/**
- * 生成未保存分镜的稳定渲染 key
- * @returns 唯一 key 字符串
- */
-function makeLocalKey(): string {
-  localKeySeq += 1
-  return `local-${Date.now()}-${localKeySeq}`
-}
-
-/** 编辑面板绑定的镜头数据 */
-const editingShot = reactive<Partial<StoryboardShot>>({
-  seq: 0,
-  description: '',
-  shot_type: '',
-  camera_move: '',
-  dialogue: '',
-  narration: '',
+/** 拖拽重排（SB-04，组合式函数封装，reorder 回调持久化到后端） */
+const {
+  dragIndex,
+  dragOverIndex,
+  reordering,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+} = useDragReorder(rows, {
+  reorder: (ids) => reorderStoryboard(projectId.value, ids),
 })
 
 /** 景别选项 */
 const shotTypeOptions = ['特写', '近景', '中景', '全景', '远景', '俯拍', '仰拍']
 /** 运镜选项 */
 const cameraMoveOptions = ['固定', '推', '拉', '摇', '移', '跟', '升降', '环绕']
-
-/**
- * 总时长（秒）
- */
-const totalDuration = computed(() =>
-  rows.value.reduce((sum, s) => sum + (Number(s.duration) || 3), 0),
-)
-
-/**
- * 与目标时长的误差
- */
-const durationDiff = computed(() => totalDuration.value - targetDuration.value)
-
-/**
- * 获取分镜数据并归一化为本地行结构
- *
- * 后端 GET /storyboard 返回 StoryboardOut[] 数组；此处同时兼容
- * 旧 {shots:[...]} 包装结构，字段名做 snake_case 双写映射。
- */
-async function fetchStoryboard(): Promise<void> {
-  loading.value = true
-  try {
-    const data = (await getStoryboard(projectId.value)) as unknown as Record<string, any>
-    const rawList: any[] = Array.isArray(data) ? data : (data?.shots ?? [])
-    rows.value = rawList.map((s: any, i: number) => {
-      const id = typeof s?.id === 'number' ? s.id : undefined
-      return {
-        key: id !== undefined ? `db-${id}` : makeLocalKey(),
-        id,
-        seq: Number(s?.seq ?? s?.sequence ?? i + 1),
-        description: s?.description ?? s?.visual_description ?? '',
-        shot_type: s?.shot_type,
-        camera_move: s?.camera_move ?? s?.camera_movement,
-        dialogue: s?.dialogue,
-        narration: s?.narration,
-        image_url: s?.image_url ?? s?.keyframe_url,
-        duration: Number(s?.duration) || 3,
-        prompt: s?.prompt,
-      }
-    })
-    if (rows.value.length > 0) {
-      selectedSeq.value = rows.value[0].seq
-      Object.assign(editingShot, rows.value[0])
-    } else {
-      selectedSeq.value = null
-    }
-
-    // 同时获取剧本原文（左栏展示）
-    try {
-      const script = await getScript(projectId.value) as any
-      if (script?.content) {
-        // 剧本 content 是结构化 JSON，提取标题和梗概用于展示
-        if (typeof script.content === 'object') {
-          const title = script.content.title || ''
-          const logline = script.content.logline || ''
-          scriptContent.value = title ? `${title}\n\n${logline}` : (script.content.raw || logline)
-        } else {
-          scriptContent.value = String(script.content)
-        }
-      }
-    } catch {
-      // 剧本不存在时保持空状态，不影响分镜主流程
-      scriptContent.value = ''
-    }
-  } catch (e) {
-    rows.value = []
-  } finally {
-    loading.value = false
-  }
-}
-
-/**
- * 生成分镜
- */
-async function handleGenerate(): Promise<void> {
-  loading.value = true
-  try {
-    await generateStoryboard(projectId.value)
-    await fetchStoryboard()
-    ElMessage.success('分镜生成完成')
-  } catch (e) {
-    ElMessage.error('分镜生成失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-/**
- * 选中镜头并加载到编辑面板
- * @param shot - 镜头对象
- */
-function selectShot(shot: ShotRow): void {
-  selectedSeq.value = shot.seq
-  Object.assign(editingShot, shot)
-}
-
-/**
- * 保存编辑的镜头
- */
-async function handleSaveShot(): Promise<void> {
-  if (selectedSeq.value === null) return
-  try {
-    await updateStoryboard(projectId.value, selectedSeq.value, {
-      description: editingShot.description,
-      shot_type: editingShot.shot_type,
-      camera_move: editingShot.camera_move,
-      dialogue: editingShot.dialogue,
-      narration: editingShot.narration,
-    })
-    const idx = rows.value.findIndex((s) => s.seq === selectedSeq.value)
-    if (idx !== -1) {
-      Object.assign(rows.value[idx], editingShot)
-    }
-    ElMessage.success('分镜已保存')
-  } catch (e) {
-    ElMessage.error('保存失败')
-  }
-}
-
-/**
- * 新增分镜
- */
-function handleAddShot(): void {
-  const newSeq = (rows.value[rows.value.length - 1]?.seq ?? 0) + 1
-  const newShot: ShotRow = {
-    key: makeLocalKey(),
-    seq: newSeq,
-    description: '',
-    shot_type: '中景',
-    camera_move: '固定',
-    dialogue: '',
-    duration: 3,
-  }
-  rows.value.push(newShot)
-  selectShot(newShot)
-  ElMessage.success('已新增分镜')
-}
-
-/**
- * 删除当前选中分镜
- */
-function handleDeleteShot(): void {
-  if (selectedSeq.value === null) return
-  const idx = rows.value.findIndex((s) => s.seq === selectedSeq.value)
-  if (idx !== -1) {
-    rows.value.splice(idx, 1)
-    selectedSeq.value = rows.value[0]?.seq ?? null
-    if (selectedSeq.value !== null) {
-      Object.assign(editingShot, rows.value[0])
-    }
-    ElMessage.success('分镜已删除')
-  }
-}
-
-/**
- * 拆分当前分镜为两个
- */
-function handleSplitShot(): void {
-  if (selectedSeq.value === null) return
-  const idx = rows.value.findIndex((s) => s.seq === selectedSeq.value)
-  if (idx !== -1) {
-    const original = rows.value[idx]
-    const newShot: ShotRow = {
-      ...original,
-      key: makeLocalKey(),
-      id: undefined,
-      seq: original.seq + 1,
-      description: original.description + '（续）',
-    }
-    rows.value.splice(idx + 1, 0, newShot)
-    ElMessage.success('分镜已拆分')
-  }
-}
-
-/**
- * 合并当前分镜与下一个分镜
- */
-function handleMergeShot(): void {
-  if (selectedSeq.value === null) return
-  const idx = rows.value.findIndex((s) => s.seq === selectedSeq.value)
-  if (idx !== -1 && idx < rows.value.length - 1) {
-    rows.value[idx].description += rows.value[idx + 1].description
-    rows.value.splice(idx + 1, 1)
-    ElMessage.success('分镜已合并')
-  }
-}
 
 /**
  * 确认分镜，进入生成阶段
@@ -280,85 +82,6 @@ async function handleConfirm(): Promise<void> {
   } catch (e) {
     // 用户取消
   }
-}
-
-/* ============ 拖拽重排（SB-04） ============ */
-
-/** 正在拖拽的卡片下标 */
-const dragIndex = ref<number | null>(null)
-/** 拖拽悬停目标下标（落点高亮） */
-const dragOverIndex = ref<number | null>(null)
-/** 重排保存中标记 */
-const reordering = ref(false)
-
-/**
- * 拖拽开始：记录拖拽源下标并写入拖拽数据
- * @param index - 拖拽源卡片下标
- * @param e - 原生 dragstart 事件
- */
-function onDragStart(index: number, e: DragEvent): void {
-  dragIndex.value = index
-  e.dataTransfer?.setData('text/plain', String(index))
-  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
-}
-
-/**
- * 拖拽悬停：标记落点并允许 drop（dragover 必须 preventDefault）
- * @param index - 悬停目标下标
- * @param e - 原生 dragover 事件
- */
-function onDragOver(index: number, e: DragEvent): void {
-  e.preventDefault()
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-  dragOverIndex.value = index
-}
-
-/**
- * 松手落点：乐观更新本地顺序并调用 reorder 端点持久化，失败回滚（SB-04）
- * @param index - 落点下标
- * @param e - 原生 drop 事件
- */
-async function onDrop(index: number, e: DragEvent): Promise<void> {
-  e.preventDefault()
-  const from = dragIndex.value
-  dragIndex.value = null
-  dragOverIndex.value = null
-  if (from === null || from === index) return
-
-  // 备份用于失败回滚
-  const backup = rows.value.map((r) => ({ ...r }))
-  const moved = rows.value.splice(from, 1)[0]
-  rows.value.splice(index, 0, moved)
-  rows.value.forEach((r, i) => {
-    r.seq = i + 1
-  })
-
-  // 存在本地新增（未持久化、无 id）的分镜时无法完整重排
-  const ids = rows.value.map((r) => r.id)
-  if (ids.some((v) => typeof v !== 'number')) {
-    ElMessage.info('列表含未保存的新增分镜，顺序仅本地生效')
-    return
-  }
-
-  reordering.value = true
-  try {
-    await reorderStoryboard(projectId.value, ids as number[])
-    ElMessage.success('分镜顺序已保存')
-  } catch (err) {
-    // 端点失败：回滚本地顺序并提示（请求错误信息已由拦截器统一弹出）
-    rows.value = backup
-    ElMessage.error('顺序保存失败，已恢复原顺序')
-  } finally {
-    reordering.value = false
-  }
-}
-
-/**
- * 拖拽结束：清除拖拽状态（无论是否成功落点）
- */
-function onDragEnd(): void {
-  dragIndex.value = null
-  dragOverIndex.value = null
 }
 
 /* ============ 连续性检查（SB-06） ============ */
@@ -405,34 +128,6 @@ function severityTagType(severity: string): 'danger' | 'warning' | 'info' {
   if (severity === 'high') return 'danger'
   if (severity === 'medium') return 'warning'
   return 'info'
-}
-
-/* ============ 节奏预览（SB-05） ============ */
-
-/** 平均单镜时长（秒），用于识别高潮段落 */
-const avgDuration = computed(() =>
-  rows.value.length ? totalDuration.value / rows.value.length : 0,
-)
-
-/**
- * 计算某分镜在总时长中的占比宽度
- * @param shot - 分镜行
- * @returns CSS 宽度字符串
- */
-function rhythmWidth(shot: ShotRow): string {
-  if (totalDuration.value <= 0) return '0%'
-  const d = Number(shot.duration) || 3
-  return `${((d / totalDuration.value) * 100).toFixed(2)}%`
-}
-
-/**
- * 判断是否为高潮 / 长镜头段落（时长超过平均值的 1.5 倍）
- * @param shot - 分镜行
- * @returns 是否高潮段落
- */
-function isPeak(shot: ShotRow): boolean {
-  const d = Number(shot.duration) || 3
-  return rows.value.length > 1 && d > avgDuration.value * 1.5
 }
 
 onMounted(() => {
@@ -509,10 +204,10 @@ onMounted(() => {
             :key="shot.key"
             class="shot-card"
             :class="{
-              selected: selectedSeq === shot.seq,
+              selected: selectedSeq === shot.sequence,
               dragging: dragIndex === index,
               'drag-over': dragOverIndex === index && dragIndex !== null && dragIndex !== index,
-              'has-issue': issueSeqSet.has(shot.seq),
+              'has-issue': issueSeqSet.has(shot.sequence),
             }"
             draggable="true"
             @dragstart="onDragStart(index, $event)"
@@ -522,20 +217,20 @@ onMounted(() => {
             @click="selectShot(shot)"
           >
             <div class="shot-thumb">
-              <el-image v-if="shot.image_url" :src="shot.image_url" fit="cover" class="thumb-img" />
+              <el-image v-if="shot.keyframe_url" :src="shot.keyframe_url" fit="cover" class="thumb-img" />
               <div v-else class="thumb-placeholder">
                 <el-icon :size="28"><Picture /></el-icon>
               </div>
-              <span class="shot-seq">#{{ shot.seq }}</span>
-              <span v-if="issueSeqSet.has(shot.seq)" class="issue-badge" title="存在衔接问题">!</span>
+              <span class="shot-seq">#{{ shot.sequence }}</span>
+              <span v-if="issueSeqSet.has(shot.sequence)" class="issue-badge" title="存在衔接问题">!</span>
             </div>
             <div class="shot-meta">
               <el-tag size="small" type="info">{{ shot.shot_type || '未设置' }}</el-tag>
-              <el-tag size="small">{{ shot.camera_move || '固定' }}</el-tag>
+              <el-tag size="small">{{ shot.camera_movement || '固定' }}</el-tag>
               <span class="shot-duration">{{ Number(shot.duration) || 3 }}s</span>
             </div>
             <div class="shot-dialogue text-ellipsis">
-              {{ shot.dialogue || shot.description || '无对白' }}
+              {{ shot.dialogue || shot.visual_description || '无对白' }}
             </div>
           </div>
         </div>
@@ -551,7 +246,7 @@ onMounted(() => {
           <el-form label-position="top" size="default">
             <el-form-item label="画面描述">
               <el-input
-                v-model="editingShot.description"
+                v-model="editingShot.visual_description"
                 type="textarea"
                 :rows="3"
                 placeholder="描述画面内容..."
@@ -563,12 +258,12 @@ onMounted(() => {
               </el-select>
             </el-form-item>
             <el-form-item label="运镜">
-              <el-select v-model="editingShot.camera_move" placeholder="选择运镜">
+              <el-select v-model="editingShot.camera_movement" placeholder="选择运镜">
                 <el-option v-for="m in cameraMoveOptions" :key="m" :label="m" :value="m" />
               </el-select>
             </el-form-item>
             <el-form-item label="时长（秒）">
-              <el-input-number v-model="(editingShot as any).duration" :min="1" :max="30" />
+              <el-input-number v-model="editingShot.duration" :min="1" :max="30" />
             </el-form-item>
             <el-form-item label="对白">
               <el-input
@@ -588,7 +283,7 @@ onMounted(() => {
             </el-form-item>
             <el-form-item label="绘图提示词">
               <el-input
-                v-model="(editingShot as any).prompt"
+                v-model="editingShot.prompt"
                 type="textarea"
                 :rows="2"
                 placeholder="用于生成画面的提示词..."
@@ -610,11 +305,11 @@ onMounted(() => {
           :key="shot.key"
           class="timeline-block"
           :style="{ width: `${((Number(shot.duration) || 3) / totalDuration) * 100}%` }"
-          :class="{ active: selectedSeq === shot.seq }"
+          :class="{ active: selectedSeq === shot.sequence }"
           @click="selectShot(shot)"
-          :title="`#${shot.seq} ${shot.shot_type || ''}`"
+          :title="`#${shot.sequence} ${shot.shot_type || ''}`"
         >
-          #{{ shot.seq }}
+          #{{ shot.sequence }}
         </div>
       </div>
       <div class="timeline-stats">
@@ -637,11 +332,11 @@ onMounted(() => {
         <el-empty v-if="rows.length === 0" description="暂无分镜" :image-size="60" />
         <div v-else class="rhythm-chart">
           <div v-for="shot in rows" :key="shot.key" class="rhythm-row" @click="selectShot(shot)">
-            <span class="rhythm-seq">#{{ shot.seq }}</span>
+            <span class="rhythm-seq">#{{ shot.sequence }}</span>
             <div class="rhythm-track">
               <div
                 class="rhythm-bar"
-                :class="{ peak: isPeak(shot), active: selectedSeq === shot.seq }"
+                :class="{ peak: isPeak(shot), active: selectedSeq === shot.sequence }"
                 :style="{ width: rhythmWidth(shot) }"
               ></div>
             </div>

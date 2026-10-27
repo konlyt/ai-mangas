@@ -9,6 +9,16 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 
+class VideoRetryableError(RuntimeError):
+    """视频生成可重试错误基类（跨厂商统一标识）。
+
+    各厂商 Provider 的 429/5xx/网络超时/队列满等临时性错误应映射为
+    本类（或其子类）抛出，供上层任务队列识别：先指数退避重试，
+    重试耗尽后由任务层 mock 兜底降级，而非直接判死任务。
+    401/403/参数错误等不可恢复错误不应映射为本类。
+    """
+
+
 class VideoProvider(ABC):
     """视频生成 Provider 抽象基类。
 
