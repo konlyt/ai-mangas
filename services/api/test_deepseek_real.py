@@ -1,6 +1,11 @@
 import httpx
 import json
+import os
 from app.domains.prompts import build_script_messages
+
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+if not DEEPSEEK_API_KEY:
+    raise SystemExit("请先设置环境变量 DEEPSEEK_API_KEY（不要把 Key 写进代码或提交到仓库）")
 
 raw_input = "请生成一个动漫剧本"
 meta = {"genre": "科幻", "style": "二次元", "episode_count": 1, "episode_duration": 1}
@@ -10,7 +15,7 @@ messages = build_script_messages(raw_input, meta)
 print("开始调用 DeepSeek...")
 url = 'https://api.deepseek.com/v1/chat/completions'
 headers = {
-    'Authorization': 'Bearer sk-2f3f768969f2485694dd1a3072163315',
+    'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
     'Content-Type': 'application/json',
 }
 data = {
